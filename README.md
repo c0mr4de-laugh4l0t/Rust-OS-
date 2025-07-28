@@ -38,5 +38,5 @@ To build and run IronVeil, you'll need:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/c0mr4de-laugh4l0t/Rust-OS
+   git clone https://github.com/c0mr4de-laugh4l0t/Rust-OS-
    cd ironveil
