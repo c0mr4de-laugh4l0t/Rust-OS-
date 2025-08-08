@@ -1,0 +1,52 @@
+# ===============================
+#  RUST TOOLCHAIN COMPONENTS
+# (Required for building no_std OS kernels)
+# ===============================
+rustup target add x86_64-unknown-none    # No operating system target
+rustup component add llvm-tools-preview  # Needed for linking/objcopy in bootimage
+rustup component add rust-src            # Source for building core/std for no_std
+
+# ===============================
+#  CARGO-BASED TOOLS
+# (Required for creating bootable images & inspecting binaries)
+# ===============================
+cargo install bootimage     # Builds kernel + bootloader into bootable .bin/.iso
+cargo install cargo-binutils # Allows objdump, nm, size, etc. for debugging kernel binaries
+
+# ===============================
+#  SYSTEM PACKAGES (LINUX / CODESPACES / WSL / UBUNTU)
+# (Required for running and testing the kernel in an emulator)
+# ===============================
+sudo apt update
+sudo apt install qemu-system-x86 lld -y   # QEMU = emulator, LLD = fast linker
+
+# ===============================
+#  macOS ALTERNATIVE
+# (If you are on Mac, use Homebrew instead of apt)
+# ===============================
+# brew install qemu llvm
+# brew link --force llvm   # Ensures lld & clang tools are in PATH
+
+# ===============================
+#  WINDOWS NOTES
+# ===============================
+# - Install QEMU for Windows: https://qemu.weilnetz.de/
+# - Install LLVM from: https://releases.llvm.org/download.html
+# - Add lld-link and llvm tools to your PATH
+
+# ===============================
+#  OPTIONAL VS CODE EXTENSIONS
+# (Recommended for easier OS development)
+# ===============================
+# rust-analyzer        -> Rust code completion and hints
+# Even Better TOML     -> Syntax highlighting for Cargo.toml
+# Error Lens           -> Shows errors inline in code
+# crates               -> Shows crate version info in Cargo.toml
+# GitHub Codespaces    -> If working in Codespaces
+
+# ===============================
+#  TEST BUILD & RUN (from Nexis folder)
+# ===============================
+cargo bootimage
+qemu-system-x86_64 -serial stdio \
+    -drive format=raw,file=target/x86_64-nexis/debug/bootimage-nexis.bin
