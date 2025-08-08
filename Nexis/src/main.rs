@@ -1,14 +1,15 @@
 #![no_std]
 #![no_main]
 
-// Nexis: IRQ keyboard (low-level PIC + IDT) + VGA shell + PMM init (fallback pool)
+// Nexis: IRQ keyboard (low-level PIC + IDT) + VGA shell + Linker-based PMM init
+
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
 mod interrupts;
 mod vga;
 mod kb;
-mod memory; // <- PMM module you added
+mod memory; // PMM module
 
 use vga::VgaWriter;
 use crate::vga::VGA_WRITER;
@@ -38,22 +39,21 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     crate::vga::sprintln!("\n=== IronVeil / Nexis (serial) ===");
     crate::vga::sprintln!("IRQ keyboard active. Type 'help' and press Enter.\n");
 
-    // === Initialize Physical Memory Manager (fallback) ===
+    // === Initialize Physical Memory Manager (linker-based, with fallback) ===
     unsafe {
-        pmm_setup_fallback();
+        pmm_setup_linker();
     }
 
     // initialize keyboard queue
     Kb::init();
 
-    // Run the exact same shell logic as before, but read keys from kb queue
+    // Run the shell (IRQ-driven)
     shell_loop()
 }
 
 /// Shell loop: uses kb::Kb::read_line_irq() to get lines (no polling)
 fn shell_loop() -> ! {
     use kb::Kb;
-    use core::str;
 
     let mut rng = crate::kb::XorShift64::new(0xabcdef123456789u64);
 
@@ -121,54 +121,36 @@ fn panic(info: &PanicInfo) -> ! {
     loop { core::hint::spin_loop(); }
 }
 
-// ---------------------- PMM fallback setup + test ------------------------
+// ---------------------- Linker-based PMM setup + fallback ------------------------
 
-/// Fallback pool: start at 1 MiB, use 64 MiB pool for the PMM bitmap + frames.
-/// This is safe for QEMU/dev testing. Adjust if you know your real memory map.
-const FALLBACK_POOL_START: usize = 0x0010_0000; // 1 MiB
-const FALLBACK_POOL_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
-
-/// Round up to FRAME_SIZE frames
-#[inline]
-fn round_up_frames(bytes: usize) -> usize {
-    (bytes + FRAME_SIZE - 1) / FRAME_SIZE
-}
-
-// Linker-based PMM setup: place bitmap just after the kernel image.
+/// Linker-based PMM setup: place bitmap just after kernel image.
+/// If pool too small, falls back to pmm_setup_fallback().
 unsafe fn pmm_setup_linker() {
     extern "C" {
         static __kernel_start: u8;
         static __kernel_end: u8;
     }
 
-    // Get kernel start/end physical addresses (these are linker symbols).
     let kstart = &__kernel_start as *const _ as usize;
     let kend = &__kernel_end as *const _ as usize;
 
-    // Align end to next frame so bitmap doesn't overlap kernel end
+    // Align kernel end up to page
     let kernel_end_page = ((kend + FRAME_SIZE - 1) / FRAME_SIZE) * FRAME_SIZE;
 
-    // Decide how much memory to use for PMM: use rest of first 64 MiB region after kernel end,
-    // but you can tune this to use entire RAM by reading BootInfo later.
-    // Here we take a conservative default pool of up to 128 MiB minus kernel_end_page.
-    let pool_start = kernel_end_page;
-    // make sure pool_start is at least 1 MiB
-    let pool_start = if pool_start < 0x0010_0000 { 0x0010_0000 } else { pool_start };
-    let max_pool_size = 128 * 1024 * 1024usize; // 128 MiB pool cap for safety
+    // Decide pool: start at kernel_end_page (min 1 MiB) up to pool_size cap
+    let pool_start = if kernel_end_page < 0x0010_0000 { 0x0010_0000 } else { kernel_end_page };
+    let max_pool_size = 128 * 1024 * 1024usize; // 128 MiB cap
     let pool_end = pool_start.saturating_add(max_pool_size);
 
-    // Compute frames in pool
-    let pool_size = if pool_end > pool_start { pool_end - pool_start } else { 0 };
+    let pool_size = if pool_end > pool_start { pool_end - pool_start } else { 0usize };
     if pool_size < FRAME_SIZE {
-        crate::vga::vprintln!("PMM: not enough pool memory after kernel (pool_size={})", pool_size);
-        // fallback to earlier fallback routine
+        crate::vga::vprintln!("PMM(linker): not enough pool after kernel, falling back.");
         pmm_setup_fallback();
         return;
     }
 
     let total_frames = pool_size / FRAME_SIZE;
     let bitmap_bytes_needed = (total_frames + 7) / 8;
-    // reserve whole frames for the bitmap itself
     let bitmap_frames = (bitmap_bytes_needed + FRAME_SIZE - 1) / FRAME_SIZE;
     let bitmap_phys = pool_start;
     let bitmap_bytes_reserved = bitmap_frames * FRAME_SIZE;
@@ -177,7 +159,7 @@ unsafe fn pmm_setup_linker() {
     let base_frame = base_frame_addr / FRAME_SIZE;
     let frames_managed = (pool_size - bitmap_bytes_reserved) / FRAME_SIZE;
 
-    // initialize PMM
+    // init PMM
     PMM.init(bitmap_phys as *mut u8, bitmap_bytes_reserved, base_frame, frames_managed);
 
     // mark bitmap pages used
@@ -196,11 +178,11 @@ unsafe fn pmm_setup_linker() {
     }
 
     crate::vga::vprintln!(
-        "PMM(linker): kernel:0x{:x}-0x{:x}, pool 0x{:x}-0x{:x}, frames={}",
+        "PMM(linker): kernel:0x{:x}-0x{:x}, pool 0x{:x}-0x{:x}, frames_managed={}",
         kstart, kend, pool_start, pool_start + pool_size, frames_managed
     );
 
-    // quick test like before
+    // quick test allocate/free
     {
         let mut allocated: [usize; 8] = [0; 8];
         for i in 0..8 {
@@ -220,3 +202,57 @@ unsafe fn pmm_setup_linker() {
         crate::vga::vprintln!("Free after free: {}", PMM.free_frames());
     }
 }
+
+/// Fallback PMM setup (kept for safety): carve pool at fixed address 1 MiB, 64 MiB size
+const FALLBACK_POOL_START: usize = 0x0010_0000; // 1 MiB
+const FALLBACK_POOL_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
+
+#[inline]
+fn round_up_frames(bytes: usize) -> usize {
+    (bytes + FRAME_SIZE - 1) / FRAME_SIZE
+}
+
+unsafe fn pmm_setup_fallback() {
+    let total_frames = FALLBACK_POOL_SIZE / FRAME_SIZE;
+    let bitmap_bytes_needed = (total_frames + 7) / 8;
+    let bitmap_frames = round_up_frames(bitmap_bytes_needed);
+    let bitmap_bytes_reserved = bitmap_frames * FRAME_SIZE;
+
+    let bitmap_phys = FALLBACK_POOL_START;
+    let bitmap_ptr = bitmap_phys as *mut u8;
+
+    let base_frame_addr = FALLBACK_POOL_START + bitmap_bytes_reserved;
+    let base_frame = base_frame_addr / FRAME_SIZE;
+    let frames_managed = (FALLBACK_POOL_SIZE - bitmap_bytes_reserved) / FRAME_SIZE;
+
+    PMM.init(bitmap_ptr, bitmap_bytes_reserved, base_frame, frames_managed);
+
+    for i in 0..bitmap_frames {
+        let pa = FALLBACK_POOL_START + i * FRAME_SIZE;
+        PMM.mark_used(pa);
+    }
+
+    crate::vga::vprintln!("PMM(fallback): frames_managed={}, free_frames={}", frames_managed, PMM.free_frames());
+
+    // Quick test: allocate 10 frames and free them.
+    {
+        let mut allocated: [usize; 16] = [0; 16];
+        for i in 0..10 {
+            if let Some(f) = PMM.alloc_frame() {
+                crate::vga::vprintln!("alloc {} -> 0x{:x}", i, f.start_address());
+                allocated[i] = f.start_address();
+            } else {
+                crate::vga::vprintln!("alloc {} -> None", i);
+            }
+        }
+        crate::vga::vprintln!("Free frames after alloc: {}", PMM.free_frames());
+        for i in 0..10 {
+            let pa = allocated[i];
+            if pa != 0 {
+                PMM.free_frame(pa);
+                crate::vga::vprintln!("freed 0x{:x}", pa);
+            }
+        }
+        crate::vga::vprintln!("Free frames after free: {}", PMM.free_frames());
+    }
+                }
