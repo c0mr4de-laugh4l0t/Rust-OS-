@@ -4,9 +4,14 @@
   "arch": "x86_64",
   "os": "none",
   "vendor": "unknown",
+  "linker-flavor": "ld.lld",
+  "linker": "rust-lld",
+  "executables": true,
   "disable-redzone": true,
   "panic-strategy": "abort",
-  "executables": true,
-  "linker-flavor": "ld.lld",
-  "linker": "rust-lld"
+  "features": "-mmx,-sse,+soft-float",
+  "relocation-model": "static",
+  "code-model": "kernel",
+  "eliminate-frame-pointer": false,
+  "max-atomic-width": 64
 }
