@@ -1,7 +1,8 @@
-// build.rs
 fn main() {
+    // linker script arg (if you're using one)
     println!("cargo:rustc-link-arg=-Tlinker.ld");
-    // instruct cargo to assemble context.S
+
+    // assemble context.S
     cc::Build::new()
         .file("src/context.S")
         .compile("context_switch");
