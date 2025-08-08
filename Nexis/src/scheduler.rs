@@ -10,7 +10,7 @@ extern "C" {
     /// Assembly routine that switches contexts.
     /// old_rsp: pointer to save current rsp (will write new saved rsp into *old_rsp)
     /// new_rsp: value of next task's rsp to load.
-    fn context_switch(old_rsp: *mut usize, new_rsp: usize);
+    fn context_switch(old_rsp_ptr: *mut usize, new_rsp: usize);
 }
 
 lazy_static! {
