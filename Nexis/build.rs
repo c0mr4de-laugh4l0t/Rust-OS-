@@ -1,5 +1,8 @@
-// build.rs — instruct rustc to use our linker script
+// build.rs
 fn main() {
-    // Tell rustc to pass the linker script to the linker
     println!("cargo:rustc-link-arg=-Tlinker.ld");
+    // instruct cargo to assemble context.S
+    cc::Build::new()
+        .file("src/context.S")
+        .compile("context_switch");
 }
