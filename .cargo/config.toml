@@ -1,5 +1,0 @@
-[build]
-target = "x86_64-nexis.json"
-
-[target.x86_64-nexis]
-runner = "bootimage runner"
