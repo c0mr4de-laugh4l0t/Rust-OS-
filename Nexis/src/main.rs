@@ -1,7 +1,8 @@
 #![no_std]
 #![no_main]
 
-// Nexis kernel: serial shell demo (usable in QEMU with -serial stdio)
+// Nexis kernel: VGA + PS/2 keyboard shell demo (on-screen)
+// Works in QEMU. Use `-serial stdio` if you still want serial.
 
 use core::panic::PanicInfo;
 use core::fmt::Write;
@@ -10,15 +11,24 @@ use uart_16550::SerialPort;
 use spin::Mutex;
 use lazy_static::lazy_static;
 
+// keyboard / port access
+use pc_keyboard::{layouts, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
+use x86_64::instructions::port::Port;
+
+// VGA constants & types
+const BUFFER_HEIGHT: usize = 25;
+const BUFFER_WIDTH: usize = 80;
+const VGA_BUFFER_ADDR: usize = 0xb8000;
+
 entry_point!(kernel_main);
 
 lazy_static! {
     static ref SERIAL1: Mutex<SerialPort> = {
-        // QEMU standard serial I/O port 0x3F8
         let mut sp = unsafe { SerialPort::new(0x3F8) };
         sp.init();
         Mutex::new(sp)
     };
+    static ref VGA_WRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
 }
 
 fn serial_print(args: core::fmt::Arguments) {
@@ -26,7 +36,6 @@ fn serial_print(args: core::fmt::Arguments) {
     let mut s = SERIAL1.lock();
     let _ = s.write_fmt(args);
 }
-
 macro_rules! sprintln {
     ($($arg:tt)*) => ($crate::serial_print(format_args!($($arg)*)));
 }
@@ -34,144 +43,313 @@ macro_rules! sprint {
     ($($arg:tt)*) => ($crate::serial_print(format_args!($($arg)*)));
 }
 
-fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    sprintln!("\n\n=== IronVeil / Nexis Kernel ===");
-    sprintln!("Serial console ready. Type 'help' and press Enter.\n");
-    serial_shell_loop();
+/// Simple VGA text-mode writer
+struct VgaWriter {
+    column: usize,
+    row: usize,
+    color: u8,
+    buffer: *mut u8,
 }
-
-/// Small xorshift RNG (no_std)
-struct XorShift64 { state: u64 }
-impl XorShift64 {
-    fn new(seed: u64) -> Self {
-        let mut s = seed;
-        if s == 0 { s = 0x123456789abcdefu64; }
-        Self { state: s }
-    }
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.state = x;
-        x
-    }
-    fn next_u8(&mut self) -> u8 { (self.next_u64() & 0xFF) as u8 }
-    fn next_range_u8(&mut self, low: u8, high: u8) -> u8 {
-        let r = self.next_u8();
-        // avoid zero division danger; assume high >= low
-        low + (r % (high - low + 1))
-    }
-}
-
-fn serial_read_byte() -> u8 {
-    loop {
-        let b = {
-            let mut s = SERIAL1.lock();
-            // SerialPort::read returns u8, 0 if no data (crate behavior)
-            s.read()
-        };
-        if b != 0 {
-            return b;
+impl VgaWriter {
+    const fn new() -> Self {
+        Self {
+            column: 0,
+            row: 0,
+            color: 0x0f, // white on black
+            buffer: VGA_BUFFER_ADDR as *mut u8,
         }
-        // tiny pause
-        for _ in 0..1000 { core::hint::spin_loop(); }
     }
-}
 
-fn serial_read_line(buf: &mut [u8]) -> usize {
-    let mut i = 0usize;
-    loop {
-        let c = serial_read_byte();
+    fn put_char(&mut self, c: char) {
         match c {
-            b'\r' => {},
-            b'\n' => { sprint!("\n"); break; }
-            8 | 127 => {
-                if i > 0 {
-                    i -= 1;
-                    sprint!("\x08 \x08");
-                }
+            '\n' => {
+                self.new_line();
+                return;
             }
-            b if b >= 32 && b < 127 => {
-                if i < buf.len() - 1 {
-                    buf[i] = b;
-                    i += 1;
-                    sprint!("{}", b as char);
-                }
-            }
+            '\r' => { self.column = 0; return; }
             _ => {}
         }
+        if self.column >= BUFFER_WIDTH {
+            self.new_line();
+        }
+        let offset = (self.row * BUFFER_WIDTH + self.column) * 2;
+        unsafe {
+            let char_byte = c as u8;
+            core::ptr::write_volatile(self.buffer.add(offset), char_byte);
+            core::ptr::write_volatile(self.buffer.add(offset + 1), self.color);
+        }
+        self.column += 1;
     }
-    buf[i] = 0;
-    i
+
+    fn write_str(&mut self, s: &str) {
+        for c in s.chars() {
+            self.put_char(c);
+        }
+    }
+
+    fn new_line(&mut self) {
+        self.column = 0;
+        if self.row + 1 < BUFFER_HEIGHT {
+            self.row += 1;
+        } else {
+            // scroll up by one line
+            for r in 1..BUFFER_HEIGHT {
+                for col in 0..BUFFER_WIDTH {
+                    let src = ((r * BUFFER_WIDTH) + col) * 2;
+                    let dst = (((r - 1) * BUFFER_WIDTH) + col) * 2;
+                    unsafe {
+                        let ch = core::ptr::read_volatile(self.buffer.add(src));
+                        let color = core::ptr::read_volatile(self.buffer.add(src + 1));
+                        core::ptr::write_volatile(self.buffer.add(dst), ch);
+                        core::ptr::write_volatile(self.buffer.add(dst + 1), color);
+                    }
+                }
+            }
+            // clear last line
+            let last = (BUFFER_HEIGHT - 1) * BUFFER_WIDTH * 2;
+            for col in 0..BUFFER_WIDTH {
+                unsafe {
+                    core::ptr::write_volatile(self.buffer.add(last + col * 2), b' ');
+                    core::ptr::write_volatile(self.buffer.add(last + col * 2 + 1), self.color);
+                }
+            }
+        }
+    }
+
+    fn clear_screen(&mut self) {
+        for r in 0..BUFFER_HEIGHT {
+            for c in 0..BUFFER_WIDTH {
+                let offset = (r * BUFFER_WIDTH + c) * 2;
+                unsafe {
+                    core::ptr::write_volatile(self.buffer.add(offset), b' ');
+                    core::ptr::write_volatile(self.buffer.add(offset + 1), self.color);
+                }
+            }
+        }
+        self.row = 0;
+        self.column = 0;
+    }
 }
 
-fn serial_shell_loop() -> ! {
-    let mut rng = XorShift64::new(0xabcdef123456789u64);
+impl core::fmt::Write for VgaWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_str(s);
+        Ok(())
+    }
+}
+
+// ----- PS/2 reading -----
+fn read_scancode() -> u8 {
+    // Port 0x60 has data register
+    let mut port = Port::<u8>::new(0x60);
+    unsafe { port.read() }
+}
+
+// Non-blocking poll for scancode: returns 0 if none
+fn poll_scancode() -> u8 {
+    // To check if data available, read status port 0x64 bit 0
+    let mut status = Port::<u8>::new(0x64);
+    let s = unsafe { status.read() };
+    if s & 0x01 == 0x01 {
+        // data ready
+        read_scancode()
+    } else {
+        0
+    }
+}
+
+// simple sleep
+fn small_delay() {
+    for _ in 0..1000 { core::hint::spin_loop(); }
+}
+
+// ----- kernel main & shell -----
+fn kernel_main(_boot_info: &'static BootInfo) -> ! {
+    {
+        let mut v = VGA_WRITER.lock();
+        v.clear_screen();
+        v.write_str("\n=== IronVeil / Nexis (VGA) ===\n");
+        v.write_str("On-screen console ready. Type 'help'.\n\n");
+    }
+    // also print serial banner
+    sprintln!("\n=== IronVeil / Nexis (serial) ===");
+    sprintln!("On-screen console ready. Type 'help' and press Enter.\n");
+
+    // keyboard state
+    let mut keyboard: Keyboard<layouts::Us104Key, ScancodeSet1> =
+        Keyboard::new(layouts::Us104Key, ScancodeSet1, HandleControl::Ignore);
+
+    serial_vga_shell_loop(&mut keyboard)
+}
+
+fn serial_vga_shell_loop(keyboard: &mut Keyboard<layouts::Us104Key, ScancodeSet1>) -> ! {
     let mut line_buf = [0u8; 256];
+    let mut len = 0usize;
 
     loop {
+        // prompt
+        {
+            let mut v = VGA_WRITER.lock();
+            v.write_str("ironveil@nexis:~$ ");
+        }
         sprint!("ironveil@nexis:~$ ");
-        let len = serial_read_line(&mut line_buf);
-        if len == 0 { continue; }
 
+        // read characters until newline
+        len = 0;
+        loop {
+            small_delay();
+            let sc = poll_scancode();
+            if sc != 0 {
+                if let Ok(Some(key_event)) = keyboard.add_byte(sc) {
+                    if let Some(key) = keyboard.process_keyevent(key_event) {
+                        match key {
+                            DecodedKey::Unicode(ch) => {
+                                // print char
+                                let c = ch;
+                                {
+                                    let mut v = VGA_WRITER.lock();
+                                    v.put_char(c);
+                                }
+                                sprint!("{}", c);
+                                if c == '\n' || c == '\r' {
+                                    break;
+                                } else if c == '\x08' {
+                                    if len > 0 { len -= 1; }
+                                } else {
+                                    if len < line_buf.len() - 1 {
+                                        line_buf[len] = c as u8;
+                                        len += 1;
+                                    }
+                                }
+                            }
+                            DecodedKey::RawKey(key) => {
+                                // handle Enter as RawKey::Enter
+                                if format!("{:?}", key) == "Enter" {
+                                    // print newline
+                                    {
+                                        let mut v = VGA_WRITER.lock();
+                                        v.put_char('\n');
+                                    }
+                                    sprintln!("");
+                                    break;
+                                } else if format!("{:?}", key) == "Backspace" {
+                                    // backspace handling
+                                    if len > 0 { len -= 1; }
+                                    {
+                                        let mut v = VGA_WRITER.lock();
+                                        // move back, replace with space, move back
+                                        v.put_char('\x08'); v.put_char(' '); v.put_char('\x08');
+                                    }
+                                    sprint!("\x08 \x08");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Also check serial input (optional)
+            // if you want to accept serial input, implement serial_read_byte() etc.
+        }
+
+        // convert buffer to &str
         let cmd = unsafe { core::str::from_utf8_unchecked(&line_buf[..len]) }.trim();
 
+        // execute command and print to both VGA and serial
         match cmd {
             "help" => {
-                sprintln!("Available commands:");
-                sprintln!("  help       - this message");
-                sprintln!("  cls|clear  - clear the console output");
-                sprintln!("  genpass    - generate a 16-char password");
-                sprintln!("  ip         - fake IPv4 address");
-                sprintln!("  mac        - fake MAC address");
-                sprintln!("  reboot     - halt (use QEMU restart)");
+                vprintln!("Available commands:");
+                vprintln!("  help       - this message");
+                vprintln!("  clear|cls  - clear screen");
+                vprintln!("  genpass    - generate 16-char password");
+                vprintln!("  ip         - fake IPv4");
+                vprintln!("  mac        - fake MAC");
+                vprintln!("  reboot     - halt (use QEMU restart)");
             }
-            "cls" | "clear" => {
-                for _ in 0..40 { sprintln!(""); }
+            "clear" | "cls" => {
+                VGA_WRITER.lock().clear_screen();
             }
             "genpass" => {
-                let mut pass = [0u8; 16];
+                let mut p = [0u8; 16];
+                // simple xorshift
+                let mut s = 0x123456789abcdefu64;
                 for i in 0..16 {
-                    let b = rng.next_range_u8(33u8, 126u8);
-                    pass[i] = b;
+                    s ^= s << 13;
+                    s ^= s >> 7;
+                    s ^= s << 17;
+                    p[i] = (s & 0x7F) as u8;
+                    if p[i] < 33 { p[i] = 33 + (p[i] % 94); }
                 }
-                let p = unsafe { core::str::from_utf8_unchecked(&pass) };
-                sprintln!("Generated password: {}", p);
+                let pass = unsafe { core::str::from_utf8_unchecked(&p) };
+                vprintln!("Generated password: {}", pass);
             }
             "ip" => {
-                let a = rng.next_range_u8(10, 250);
-                let b = rng.next_range_u8(1, 254);
-                let c = rng.next_range_u8(1, 254);
-                let d = rng.next_range_u8(1, 254);
-                sprintln!("Fake IPv4: {}.{}.{}.{}", a, b, c, d);
+                let mut s = 0xabcdef12345u64;
+                s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+                let a = (s & 0xFF) % 240 + 10;
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let b = (s & 0xFF) % 254 + 1;
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let c = (s & 0xFF) % 254 + 1;
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let d = (s & 0xFF) % 254 + 1;
+                vprintln!("Fake IPv4: {}.{}.{}.{}", a, b, c, d);
             }
             "mac" => {
+                let mut s = 0xdeadbeefu64;
                 let mut parts = [0u8; 6];
-                for i in 0..6 { parts[i] = rng.next_u8(); }
-                sprintln!("Fake MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                for i in 0..6 {
+                    s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    parts[i] = (s & 0xFF) as u8;
+                }
+                vprintln!("Fake MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]);
             }
             "reboot" => {
-                sprintln!("Reboot requested — halting kernel (use QEMU restart).");
+                vprintln!("Reboot requested — halting kernel (restart QEMU).");
                 loop { core::hint::spin_loop(); }
             }
             "" => {}
             _ => {
-                sprintln!("Unknown command: '{}'. Type 'help'.", cmd);
+                vprintln!("Unknown command: '{}'. Type 'help'.", cmd);
             }
         }
+
+        // clear input buffer
+        for i in 0..len { line_buf[i] = 0; }
+        len = 0;
     }
 }
 
-/// Panic handler prints panic info to serial then halts
+// helper to print to VGA + serial
+fn vprintln_impl(args: core::fmt::Arguments) {
+    // VGA
+    {
+        let mut v = VGA_WRITER.lock();
+        let _ = v.write_fmt(args);
+        v.put_char('\n');
+    }
+    // serial
+    serial_print(args);
+    serial_print(format_args!("\n"));
+}
+macro_rules! vprintln {
+    ($($arg:tt)*) => ($crate::vprintln_impl(format_args!($($arg)*)));
+}
+macro_rules! vprint {
+    ($($arg:tt)*) => ({
+        let mut v = VGA_WRITER.lock();
+        let _ = v.write_fmt(format_args!($($arg)*));
+        let _ = serial_print(format_args!($($arg)*));
+    });
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    sprintln!("\n\n*** PANIC ***");
+    vprintln!("\n\n*** PANIC ***");
     if let Some(loc) = info.location() {
-        sprintln!("panic at {}:{}: {}", loc.file(), loc.line(), info);
+        vprintln!("panic at {}:{}: {}", loc.file(), loc.line(), info);
     } else {
-        sprintln!("panic: {}", info);
+        vprintln!("panic: {}", info);
     }
     loop { core::hint::spin_loop(); }
-    }
+}
