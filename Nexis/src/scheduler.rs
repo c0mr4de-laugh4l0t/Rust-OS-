@@ -66,7 +66,8 @@ pub fn schedule_loop() -> ! {
                 unsafe {
                     // create local old_rsp storage to be filled by context_switch
                     let mut old_rsp: usize = 0;
-                    context_switch(&mut old_rsp as *mut usize, next_task.rsp);
+                    unsafe {context_switch(&mut old_rsp as *mut usize, next_task.rsp); }
+                    cur_task.rsp = old_rsp; // Store saved rsp back to the current task's PCB
                 }
             }
         }
