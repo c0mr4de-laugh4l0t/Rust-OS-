@@ -1,9 +1,6 @@
 #![no_std]
 #![no_main]
 
-// Nexis: IRQ keyboard (low-level PIC + IDT) + VGA shell + Linker-based PMM init
-// Phase-2 cooperative scheduler: shell + demo task spawned.
-
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
