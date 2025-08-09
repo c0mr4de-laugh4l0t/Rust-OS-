@@ -135,9 +135,9 @@ pub fn spawn(entry: extern "C" fn(), pmm: &PhysicalMemoryManager, pages: usize) 
 }
 
 /// When a task finishes, call this to mark finished and free stack
-pub fn task_exit(index: usize, pmm: &PhysicalMemoryManager) {
-    let mut tbl = TASK_TABLE.lock();
-    let t = &mut tbl.tasks[index];
-    t.state = TaskState::Finished;
-    free_stack(pmm, t.stack_base, t.stack_size);
-              }
+pub fn check_and_schedule() {
+    if crate::pit::NEED_RESCHED.swap(false, core::sync::atomic::Ordering::SeqCst) {
+        // Only run scheduler if flag was set
+        schedule_tick();
+    }
+}
