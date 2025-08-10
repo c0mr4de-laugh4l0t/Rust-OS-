@@ -1,42 +1,80 @@
-# IronVeil
+IronVeil OS – README
 
-**IronVeil** is a privacy-first, live USB operating system built from scratch in Rust with a custom kernel. Designed to protect user anonymity and security, IronVeil runs entirely from a USB drive and randomizes your IP address on each boot, inspired by privacy-focused systems like Tails. Leveraging Rust's memory safety, IronVeil aims to provide a secure, lightweight, and portable platform for users prioritizing anonymity and data protection.
+Overview
 
-## Features
+IronVeil is a Rust-based privacy-focused operating system featuring a custom no_std kernel named Nexis. It is built from scratch for internal storage booting, privacy-first networking, and a secure, minimal user environment.
 
-- **Privacy by Design**: Automatically randomizes IP addresses on each boot using Tor (or similar anonymization protocols, TBD).
-- **Live USB**: Runs entirely from a USB drive, leaving no trace on the host machine.
-- **Rust-Powered Kernel**: Custom kernel written in Rust for memory safety and performance.
-- **Secure Boot**: Ensures a trusted boot process with minimal attack surface.
-- **Lightweight**: Optimized for low-resource devices, ideal for portable use.
-- **Amnesiac System**: Ephemeral filesystem to prevent data persistence across sessions.
-- (Add more features as implemented, e.g., encrypted storage, VPN support)
+Features
 
-## Status
+Custom Bootloader: Initializes the CPU in 64-bit long mode, sets up GDT, IDT, and paging.
 
-IronVeil is in **early development**. Current focus includes:
-- Bootloader setup for live USB support
-- Kernel initialization with basic memory management
-- Integration of Tor or similar for IP randomization
-- (Update with specific milestones or progress)
+Nexis Kernel: Written in Rust with a custom x86_64-nexis.json target, providing memory management, interrupt handling, and preemptive multitasking.
 
-Expect breaking changes as the project evolves.
+System Core Services: Command execution engine, process manager, and TUI framework for user interaction.
 
-## Getting Started
+Privacy Stack: Tor-based IP randomization, MAC spoofing, and optional encrypted persistence.
 
-### Prerequisites
+User Interface: Rust-colored CLI, animated ASCII banner, Neofetch-style info screen, and live system status panel.
 
-To build and run IronVeil, you'll need:
-- Rust (nightly) - `rustup install nightly`
-- Cargo - Included with Rust
-- QEMU (for emulation) - `qemu-system-x86_64`
-- A POSIX-compliant system (Linux recommended for development)
-- USB drive (for live system testing)
-- (Optional) Tools for live USB creation, e.g., `dd` or `Ventoy`
 
-### Building
+Architecture
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/c0mr4de-laugh4l0t/Rust-OS-
-   cd IronVeil
+IronVeil follows a layered architecture:
+
+1. Boot & Kernel – Bootloader and Nexis kernel.
+
+
+2. System Core Services – Process management and shell.
+
+
+3. Privacy & Network Stack – Tor routing, MAC spoofing, encryption.
+
+
+4. User Experience Layer – CLI, TUI, live dashboards.
+
+
+
+A detailed architecture diagram is available in IronVeil_architecture.tex.
+
+Current Status
+
+Bootloader loads Nexis kernel from internal storage.
+
+CLI functional with ASCII banner.
+
+TUI framework under development.
+
+Preemptive multitasking implementation.
+
+Encrypted persistence and full Tor routing planned.
+
+
+Build Instructions
+
+Requirements
+
+Rust nightly toolchain
+
+cargo-xbuild or cargo build -Zbuild-std
+
+bootimage for kernel image building
+
+QEMU for emulation
+
+
+Steps
+
+# Clone repository
+git clone https://github.com/yourusername/ironveil.git
+cd ironveil
+
+# Build kernel
+cargo build --target x86_64-nexis.json
+
+# Run in QEMU
+qemu-system-x86_64 -drive format=raw,file=target/x86_64-nexis/debug/bootimage-ironveil.bin
+
+License
+
+IronVeil is licensed under the MIT License.
+
