@@ -3,7 +3,7 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::{interrupts, port::Port};
 use crate::kb::Kb;
-use crate::pit::pit_handler;
+use crate::pit;
 
 pub const PIC1_COMMAND: u16 = 0x20;
 pub const PIC1_DATA: u16 = 0x21;
@@ -16,7 +16,7 @@ lazy_static! {
 
 pub fn init_idt() {
     let mut idt = InterruptDescriptorTable::new();
-    idt[32].set_handler_fn(pit_handler);
+    idt[32].set_handler_fn(irq0_handler);
     idt[33].set_handler_fn(keyboard_interrupt);
     *IDT.lock() = Some(idt);
     if let Some(ref i) = *IDT.lock() {
@@ -58,6 +58,12 @@ fn send_eoi(irq: u8) {
         }
         cmd.write(0x20);
     }
+}
+
+extern "x86-interrupt" fn irq0_handler(_stack_frame: &mut InterruptStackFrame) {
+    pit::tick();
+    crate::scheduler::schedule_tick();
+    send_eoi(0);
 }
 
 extern "x86-interrupt" fn keyboard_interrupt(_stack_frame: &mut InterruptStackFrame) {
