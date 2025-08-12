@@ -80,51 +80,71 @@ fn shell_loop() -> ! {
         crate::vga::sprint!("ironveil@nexis:~$ ");
 
         let line = Kb::read_line_irq();
-
         let cmd = line.trim();
-        match cmd {
-            "help" => {
-                crate::vga::vprintln!("Available commands:");
-                crate::vga::vprintln!("  help       - this message");
-                crate::vga::vprintln!("  clear|cls  - clear screen");
-                crate::vga::vprintln!("  genpass    - generate a 16-char password");
-                crate::vga::vprintln!("  ip         - fake IPv4");
-                crate::vga::vprintln!("  mac        - fake MAC");
-                crate::vga::vprintln!("  reboot     - halt (restart QEMU)");
+
+        if cmd == "help" {
+            crate::vga::vprintln!("Available commands:");
+            crate::vga::vprintln!("  help       - this message");
+            crate::vga::vprintln!("  clear|cls  - clear screen");
+            crate::vga::vprintln!("  genpass    - generate a 16-char password");
+            crate::vga::vprintln!("  ip         - fake IPv4");
+            crate::vga::vprintln!("  mac        - fake MAC");
+            crate::vga::vprintln!("  reboot     - halt (restart QEMU)");
+            crate::vga::vprintln!("  ls         - list files in FS");
+            crate::vga::vprintln!("  cat <file> - show file contents");
+            crate::vga::vprintln!("  write <file> <data> - write to file");
+        }
+        else if cmd == "clear" || cmd == "cls" {
+            VGA_WRITER.lock().clear_screen();
+        }
+        else if cmd == "genpass" {
+            let mut pass = [0u8; 16];
+            for i in 0..16 {
+                let b = rng.next_range_u8(33u8, 126u8);
+                pass[i] = b;
             }
-            "clear" | "cls" => {
-                VGA_WRITER.lock().clear_screen();
+            let p = unsafe { core::str::from_utf8_unchecked(&pass) };
+            crate::vga::vprintln!("Generated password: {}", p);
+        }
+        else if cmd == "ip" {
+            let a = rng.next_range_u8(10, 250);
+            let b = rng.next_range_u8(1, 254);
+            let c = rng.next_range_u8(1, 254);
+            let d = rng.next_range_u8(1, 254);
+            crate::vga::vprintln!("Fake IPv4: {}.{}.{}.{}", a, b, c, d);
+        }
+        else if cmd == "mac" {
+            let mut parts = [0u8; 6];
+            for i in 0..6 { parts[i] = rng.next_u8(); }
+            crate::vga::vprintln!(
+                "Fake MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+            );
+        }
+        else if cmd.starts_with("ls") {
+            crate::fs::list_files();
+        }
+        else if cmd.starts_with("cat ") {
+            let name = cmd.strip_prefix("cat ").unwrap().trim();
+            crate::fs::read_file(name);
+        }
+        else if cmd.starts_with("write ") {
+            let args = cmd.strip_prefix("write ").unwrap().trim();
+            if let Some((name, data)) = args.split_once(' ') {
+                crate::fs::write_file(name.trim(), data.as_bytes());
+            } else {
+                crate::vga::vprintln!("Usage: write <file> <data>");
             }
-            "genpass" => {
-                let mut pass = [0u8; 16];
-                for i in 0..16 {
-                    let b = rng.next_range_u8(33u8, 126u8);
-                    pass[i] = b;
-                }
-                let p = unsafe { core::str::from_utf8_unchecked(&pass) };
-                crate::vga::vprintln!("Generated password: {}", p);
-            }
-            "ip" => {
-                let a = rng.next_range_u8(10, 250);
-                let b = rng.next_range_u8(1, 254);
-                let c = rng.next_range_u8(1, 254);
-                let d = rng.next_range_u8(1, 254);
-                crate::vga::vprintln!("Fake IPv4: {}.{}.{}.{}", a, b, c, d);
-            }
-            "mac" => {
-                let mut parts = [0u8; 6];
-                for i in 0..6 { parts[i] = rng.next_u8(); }
-                crate::vga::vprintln!(
-                    "Fake MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
-                );
-            }
-            "reboot" => {
-                crate::vga::vprintln!("Reboot requested — halting kernel (restart QEMU).");
-                loop { core::hint::spin_loop(); }
-            }
-            "" => {}
-            _ => crate::vga::vprintln!("Unknown command: '{}'. Type 'help'.", cmd),
+        }
+        else if cmd == "reboot" {
+            crate::vga::vprintln!("Reboot requested — halting kernel (restart QEMU).");
+            loop { core::hint::spin_loop(); }
+        }
+        else if cmd.is_empty() {
+            // do nothing
+        }
+        else {
+            crate::vga::vprintln!("Unknown command: '{}'. Type 'help'.", cmd);
         }
     }
 }
