@@ -9,13 +9,12 @@ mod vga;
 mod kb;
 mod memory;
 mod scheduler;
-mod task;
-mod pit;
-mod process;
+mod fs;
 
-use crate::kb::Kb;
-use crate::memory::{PhysicalMemoryManager, FRAME_SIZE};
+use vga::VgaWriter;
 use crate::vga::VGA_WRITER;
+use crate::kb::Kb;
+use memory::{PhysicalMemoryManager, FRAME_SIZE};
 
 entry_point!(kernel_main);
 
@@ -24,29 +23,32 @@ static mut PMM: PhysicalMemoryManager = PhysicalMemoryManager::new_uninit();
 fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     interrupts::init_idt();
     interrupts::remap_pic();
-
-    unsafe { pmm_setup_linker(); }
-
-    Kb::init();
-
-    pit::init(50);
-
     interrupts::enable_interrupts();
 
     {
         let mut vw = VGA_WRITER.lock();
         vw.clear_screen();
-        vw.write_str("\n=== IronVeil / Nexis (Phase 3) ===\n");
-        vw.write_str("Type 'help' for commands.\n\n");
+        vw.write_str("\n=== IronVeil / Nexis (VGA IRQ keyboard + PMM + Scheduler + FS) ===\n");
+        vw.write_str("On-screen console ready. Type 'help'.\n\n");
     }
 
+    crate::vga::sprintln!("\n=== IronVeil / Nexis (serial) ===");
+    crate::vga::sprintln!("IRQ keyboard active. Type 'help' and press Enter.\n");
+
+    unsafe {
+        pmm_setup_linker();
+    }
+
+    crate::fs::fs_init();
+
+    Kb::init();
+
     extern "C" fn demo_task() {
-        let mut i = 0u64;
+        let mut i: u64 = 0;
         loop {
-            crate::vga::vprintln!("[demo_task] tick {}", i);
+            crate::vga::vprintln!("demo_task: tick {}", i);
             i = i.wrapping_add(1);
             for _ in 0..200_000 { core::hint::spin_loop(); }
-            crate::scheduler::check_and_schedule();
             crate::scheduler::task_yield();
         }
     }
@@ -56,17 +58,21 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     }
 
     unsafe {
-        scheduler::spawn(demo_task, &PMM, 4);
-        scheduler::spawn(shell_task, &PMM, 16);
+        if let Some(slot) = crate::scheduler::spawn(demo_task, &PMM, 4) {
+            crate::vga::vprintln!("Spawned demo task at slot {}", slot);
+        }
+
+        if let Some(slot) = crate::scheduler::spawn(shell_task, &PMM, 16) {
+            crate::vga::vprintln!("Spawned shell task at slot {}", slot);
+        }
     }
 
-    loop {
-        scheduler::check_and_schedule();
-        x86_64::instructions::hlt();
-    }
+    crate::scheduler::schedule_loop()
 }
 
 fn shell_loop() -> ! {
+    use kb::Kb;
+
     let mut rng = crate::kb::XorShift64::new(0xabcdef123456789u64);
 
     loop {
@@ -74,61 +80,62 @@ fn shell_loop() -> ! {
         crate::vga::sprint!("ironveil@nexis:~$ ");
 
         let line = Kb::read_line_irq();
-        crate::scheduler::check_and_schedule();
-        let cmd = line.trim();
 
+        let cmd = line.trim();
         match cmd {
             "help" => {
                 crate::vga::vprintln!("Available commands:");
-                crate::vga::vprintln!("  help");
-                crate::vga::vprintln!("  clear");
-                crate::vga::vprintln!("  genpass");
-                crate::vga::vprintln!("  ip");
-                crate::vga::vprintln!("  mac");
-                crate::vga::vprintln!("  reboot");
+                crate::vga::vprintln!("  help       - this message");
+                crate::vga::vprintln!("  clear|cls  - clear screen");
+                crate::vga::vprintln!("  genpass    - generate a 16-char password");
+                crate::vga::vprintln!("  ip         - fake IPv4");
+                crate::vga::vprintln!("  mac        - fake MAC");
+                crate::vga::vprintln!("  reboot     - halt (restart QEMU)");
             }
-            "clear" => VGA_WRITER.lock().clear_screen(),
+            "clear" | "cls" => {
+                VGA_WRITER.lock().clear_screen();
+            }
             "genpass" => {
                 let mut pass = [0u8; 16];
                 for i in 0..16 {
-                    pass[i] = rng.next_range_u8(33, 126);
+                    let b = rng.next_range_u8(33u8, 126u8);
+                    pass[i] = b;
                 }
                 let p = unsafe { core::str::from_utf8_unchecked(&pass) };
-                crate::vga::vprintln!("Password: {}", p);
+                crate::vga::vprintln!("Generated password: {}", p);
             }
             "ip" => {
-                crate::vga::vprintln!(
-                    "Fake IPv4: {}.{}.{}.{}",
-                    rng.next_range_u8(10, 250),
-                    rng.next_range_u8(1, 254),
-                    rng.next_range_u8(1, 254),
-                    rng.next_range_u8(1, 254)
-                );
+                let a = rng.next_range_u8(10, 250);
+                let b = rng.next_range_u8(1, 254);
+                let c = rng.next_range_u8(1, 254);
+                let d = rng.next_range_u8(1, 254);
+                crate::vga::vprintln!("Fake IPv4: {}.{}.{}.{}", a, b, c, d);
             }
             "mac" => {
                 let mut parts = [0u8; 6];
-                for i in 0..6 {
-                    parts[i] = rng.next_u8();
-                }
+                for i in 0..6 { parts[i] = rng.next_u8(); }
                 crate::vga::vprintln!(
                     "Fake MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
                 );
             }
-            "reboot" => loop { core::hint::spin_loop(); },
+            "reboot" => {
+                crate::vga::vprintln!("Reboot requested — halting kernel (restart QEMU).");
+                loop { core::hint::spin_loop(); }
+            }
             "" => {}
-            _ => crate::vga::vprintln!("Unknown command: '{}'", cmd),
+            _ => crate::vga::vprintln!("Unknown command: '{}'. Type 'help'.", cmd),
         }
     }
 }
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    crate::vga::vprintln!("\n*** PANIC ***");
+    crate::vga::vprintln!("\n\n*** PANIC ***");
     if let Some(loc) = info.location() {
-        crate::vga::vprintln!("At {}:{}: {}", loc.file(), loc.line(), info);
+        crate::vga::vprintln!("panic at {}:{}: {}", loc.file(), loc.line(), info);
     } else {
-        crate::vga::vprintln!("{}", info);
+        crate::vga::vprintln!("panic: {}", info);
     }
     loop { core::hint::spin_loop(); }
 }
@@ -143,12 +150,14 @@ unsafe fn pmm_setup_linker() {
     let kend = &__kernel_end as *const _ as usize;
 
     let kernel_end_page = ((kend + FRAME_SIZE - 1) / FRAME_SIZE) * FRAME_SIZE;
+
     let pool_start = if kernel_end_page < 0x0010_0000 { 0x0010_0000 } else { kernel_end_page };
     let max_pool_size = 128 * 1024 * 1024usize;
     let pool_end = pool_start.saturating_add(max_pool_size);
-    let pool_size = if pool_end > pool_start { pool_end - pool_start } else { 0usize };
 
+    let pool_size = if pool_end > pool_start { pool_end - pool_start } else { 0usize };
     if pool_size < FRAME_SIZE {
+        crate::vga::vprintln!("PMM(linker): not enough pool after kernel, falling back.");
         pmm_setup_fallback();
         return;
     }
@@ -182,25 +191,6 @@ unsafe fn pmm_setup_linker() {
         "PMM(linker): kernel:0x{:x}-0x{:x}, pool 0x{:x}-0x{:x}, frames_managed={}",
         kstart, kend, pool_start, pool_start + pool_size, frames_managed
     );
-
-    {
-        let mut allocated: [usize; 8] = [0; 8];
-        for i in 0..8 {
-            if let Some(f) = PMM.alloc_frame() {
-                crate::vga::vprintln!("alloc {} -> 0x{:x}", i, f.start_address());
-                allocated[i] = f.start_address();
-            }
-        }
-        crate::vga::vprintln!("Free after alloc: {}", PMM.free_frames());
-        for i in 0..8 {
-            let pa = allocated[i];
-            if pa != 0 {
-                PMM.free_frame(pa);
-                crate::vga::vprintln!("freed 0x{:x}", pa);
-            }
-        }
-        crate::vga::vprintln!("Free after free: {}", PMM.free_frames());
-    }
 }
 
 const FALLBACK_POOL_START: usize = 0x0010_0000;
@@ -232,25 +222,4 @@ unsafe fn pmm_setup_fallback() {
     }
 
     crate::vga::vprintln!("PMM(fallback): frames_managed={}, free_frames={}", frames_managed, PMM.free_frames());
-
-    {
-        let mut allocated: [usize; 16] = [0; 16];
-        for i in 0..10 {
-            if let Some(f) = PMM.alloc_frame() {
-                crate::vga::vprintln!("alloc {} -> 0x{:x}", i, f.start_address());
-                allocated[i] = f.start_address();
-            } else {
-                crate::vga::vprintln!("alloc {} -> None", i);
-            }
-        }
-        crate::vga::vprintln!("Free frames after alloc: {}", PMM.free_frames());
-        for i in 0..10 {
-            let pa = allocated[i];
-            if pa != 0 {
-                PMM.free_frame(pa);
-                crate::vga::vprintln!("freed 0x{:x}", pa);
-            }
-        }
-        crate::vga::vprintln!("Free frames after free: {}", PMM.free_frames());
-    }
 }
