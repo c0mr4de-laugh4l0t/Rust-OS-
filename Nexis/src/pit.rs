@@ -1,10 +1,10 @@
 use x86_64::instructions::port::Port;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-pub static NEED_RESCHED: AtomicBool = AtomicBool::new(false);
+static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 
 pub fn init(hz: u32) {
-    let divisor = 1193180 / hz;
+    let divisor = if hz == 0 { 0 } else { (1193182u32 / hz) as u16 };
     unsafe {
         let mut cmd = Port::<u8>::new(0x43);
         let mut data = Port::<u8>::new(0x40);
@@ -14,10 +14,10 @@ pub fn init(hz: u32) {
     }
 }
 
-pub extern "x86-interrupt" fn pit_handler(_stack_frame: &mut x86_64::structures::idt::InterruptStackFrame) {
-    NEED_RESCHED.store(true, Ordering::SeqCst);
-    unsafe {
-        let mut cmd = Port::<u8>::new(0x20);
-        cmd.write(0x20);
-    }
+pub fn tick() -> u64 {
+    TICK_COUNT.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+pub fn ticks() -> u64 {
+    TICK_COUNT.load(Ordering::SeqCst)
 }
