@@ -4,6 +4,8 @@
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
+mod process;
+mod syscall;
 mod interrupts;
 mod vga;
 mod kb;
