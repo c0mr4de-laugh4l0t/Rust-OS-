@@ -2,13 +2,16 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::{interrupts, port::Port};
+use core::arch::asm;
+
 use crate::kb::Kb;
-use crate::pit;
+use crate::syscall::syscall_handler;
 
 pub const PIC1_COMMAND: u16 = 0x20;
 pub const PIC1_DATA: u16 = 0x21;
 pub const PIC2_COMMAND: u16 = 0xA0;
 pub const PIC2_DATA: u16 = 0xA1;
+pub const SYSCALL_VECTOR: u8 = 0x80;
 
 lazy_static! {
     static ref IDT: Mutex<Option<InterruptDescriptorTable>> = Mutex::new(None);
@@ -16,8 +19,8 @@ lazy_static! {
 
 pub fn init_idt() {
     let mut idt = InterruptDescriptorTable::new();
-    idt[32].set_handler_fn(irq0_handler);
     idt[33].set_handler_fn(keyboard_interrupt);
+    idt[SYSCALL_VECTOR as usize].set_handler_fn(syscall_interrupt);
     *IDT.lock() = Some(idt);
     if let Some(ref i) = *IDT.lock() {
         i.load();
@@ -60,12 +63,6 @@ fn send_eoi(irq: u8) {
     }
 }
 
-extern "x86-interrupt" fn irq0_handler(_stack_frame: &mut InterruptStackFrame) {
-    pit::tick();
-    crate::scheduler::schedule_tick();
-    send_eoi(0);
-}
-
 extern "x86-interrupt" fn keyboard_interrupt(_stack_frame: &mut InterruptStackFrame) {
     unsafe {
         let mut port = Port::<u8>::new(0x60);
@@ -73,4 +70,21 @@ extern "x86-interrupt" fn keyboard_interrupt(_stack_frame: &mut InterruptStackFr
         Kb::push_scancode(scancode);
     }
     send_eoi(1);
+}
+
+extern "x86-interrupt" fn syscall_interrupt(_stack_frame: &mut InterruptStackFrame) {
+    let num: usize;
+    let a1: usize;
+    let a2: usize;
+    let a3: usize;
+    unsafe {
+        asm!("mov {}, rax", out(reg) num);
+        asm!("mov {}, rdi", out(reg) a1);
+        asm!("mov {}, rsi", out(reg) a2);
+        asm!("mov {}, rdx", out(reg) a3);
+    }
+    let ret = syscall_handler(num, a1, a2, a3);
+    unsafe {
+        asm!("mov rax, {}", in(reg) ret);
+    }
 }
