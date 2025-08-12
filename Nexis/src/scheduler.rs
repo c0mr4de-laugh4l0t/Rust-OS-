@@ -1,4 +1,4 @@
-// scheduler.rs
+
 #![no_std]
 
 use crate::task::{Task, TaskState, TASK_TABLE};
@@ -7,23 +7,17 @@ use spin::Mutex;
 use lazy_static::lazy_static;
 
 extern "C" {
-    /// Assembly routine that switches contexts.
-    /// old_rsp_ptr: pointer to a usize where current RSP will be stored
-    /// new_rsp: the RSP value to load for the new context.
+   
     fn context_switch(old_rsp_ptr: *mut usize, new_rsp: usize);
 }
 
 lazy_static! {
-    // CURRENT holds the index into TASK_TABLE of the currently running task (if any)
     pub static ref CURRENT: Mutex<Option<usize>> = Mutex::new(None);
 }
 
-/// Start scheduler: should be called once after tasks are created. Will never return.
-/// Simple cooperative loop: finds next Ready task and switches to it.
 pub fn schedule_loop() -> ! {
     loop {
-        // find next ready task (naive round-robin starting from current+1)
-        let next_opt = {
+           let next_opt = {
             let table = TASK_TABLE.lock();
             let n = crate::task::TaskTable::MAX_TASKS;
             let start = match *CURRENT.lock() {
