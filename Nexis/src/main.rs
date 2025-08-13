@@ -36,6 +36,9 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
         pmm_setup_linker();
     }
 
+  unsafe { crate::alloc::init_heap(); }
+  crate::fs::fs_init();
+
     fs::fs_init(); // new FS init here
 
     Kb::init();
