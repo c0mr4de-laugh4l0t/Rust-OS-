@@ -1,195 +1,185 @@
- #![no_std]
 
-use core::str;
-use core::sync::atomic::{AtomicBool, Ordering};
-use lazy_static::lazy_static;
+#![allow(dead_code)]
+
+use core::{cmp, mem};
 use spin::Mutex;
 
-const MAX_FILES: usize = 64;
-const MAX_NAME: usize = 32;
-const FILE_CAP: usize = 4096;
-const MAX_FDS: usize = 128;
-const FD_BASE: usize = 3;
+pub const MAX_FILES: usize = 16;
+pub const MAX_NAME: usize = 32;
+pub const MAX_FILE_SIZE: usize = 4096;
+const STORAGE_BYTES: usize = MAX_FILES * MAX_FILE_SIZE;
 
 #[derive(Clone, Copy)]
-struct File {
+struct FileMeta {
     used: bool,
+    name_len: u8,
     name: [u8; MAX_NAME],
-    len: usize,
-    data: [u8; FILE_CAP],
+    len: u32,
+    slot: u16, // 0..MAX_FILES-1
 }
 
-impl File {
+impl FileMeta {
     const fn empty() -> Self {
         Self {
             used: false,
-            name: [0u8; MAX_NAME],
+            name_len: 0,
+            name: [0; MAX_NAME],
             len: 0,
-            data: [0u8; FILE_CAP],
+            slot: 0,
         }
     }
 }
 
-#[derive(Clone, Copy)]
-struct FdEntry {
-    used: bool,
-    file_idx: usize,
-    pos: usize,
+pub enum FsError {
+    NoSpace,
+    NameTooLong,
+    FileTooLarge,
+    NotFound,
 }
 
-impl FdEntry {
-    const fn empty() -> Self {
-        Self { used: false, file_idx: 0, pos: 0 }
+struct FsState {
+    metas: [FileMeta; MAX_FILES],
+    storage: [u8; STORAGE_BYTES],
+}
+
+impl FsState {
+    const fn new() -> Self {
+        Self {
+            metas: [FileMeta::empty(); MAX_FILES],
+            storage: [0; STORAGE_BYTES],
+        }
+    }
+
+    fn slot_base(slot: usize) -> usize {
+        slot * MAX_FILE_SIZE
+    }
+
+    fn find_by_name(&self, name: &str) -> Option<usize> {
+        let nb = name.as_bytes();
+        for i in 0..MAX_FILES {
+            let m = &self.metas[i];
+            if !m.used { continue; }
+            let nlen = m.name_len as usize;
+            if nlen == nb.len() && m.name[..nlen] == nb[..] {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn find_free_slot(&self) -> Option<usize> {
+        for i in 0..MAX_FILES {
+            if !self.metas[i].used {
+                return Some(i);
+            }
+        }
+        None
     }
 }
 
-lazy_static! {
-    static ref FILE_TABLE: Mutex<[File; MAX_FILES]> = Mutex::new([File::empty(); MAX_FILES]);
-    static ref FD_TABLE: Mutex<[FdEntry; MAX_FDS]> = Mutex::new([FdEntry::empty(); MAX_FDS]);
-    static ref INIT_FLAG: AtomicBool = AtomicBool::new(false);
-}
+static FS: Mutex<FsState> = Mutex::new(FsState::new());
 
 pub fn fs_init() {
-    if INIT_FLAG.load(Ordering::SeqCst) { return; }
-    INIT_FLAG.store(true, Ordering::SeqCst);
-    let mut ft = FILE_TABLE.lock();
-    ft[0].used = true;
-    let name = b"README.txt";
-    ft[0].name[..name.len()].copy_from_slice(name);
-    let content = b"IronVeil RAMFS\n";
-    ft[0].data[..content.len()].copy_from_slice(content);
-    ft[0].len = content.len();
+    let mut fs = FS.lock();
+    // optional seed files
+    let _ = write_internal(&mut fs, "readme.txt", b"Welcome to Nexis RAMFS.\nUse ls/cat/write.\n");
 }
 
-fn find_free_file_slot() -> Option<usize> {
-    let mut ft = FILE_TABLE.lock();
+pub fn fs_write(name: &str, data: &[u8]) -> Result<usize, FsError> {
+    let mut fs = FS.lock();
+    write_internal(&mut fs, name, data)
+}
+
+pub fn fs_read(name: &str, out: &mut [u8]) -> Result<usize, FsError> {
+    let fs = FS.lock();
+    let idx = fs.find_by_name(name).ok_or(FsError::NotFound)?;
+    let meta = &fs.metas[idx];
+    let len = meta.len as usize;
+    let base = FsState::slot_base(meta.slot as usize);
+    let n = cmp::min(len, out.len());
+    out[..n].copy_from_slice(&fs.storage[base..base + n]);
+    Ok(n)
+}
+
+pub fn fs_len(name: &str) -> Result<usize, FsError> {
+    let fs = FS.lock();
+    let idx = fs.find_by_name(name).ok_or(FsError::NotFound)?;
+    Ok(fs.metas[idx].len as usize)
+}
+
+pub fn fs_list(mut cb: impl FnMut(&str, usize)) {
+    let fs = FS.lock();
     for i in 0..MAX_FILES {
-        if !ft[i].used { return Some(i); }
-    }
-    None
-}
-
-fn find_file_by_name(name: &[u8]) -> Option<usize> {
-    let ft = FILE_TABLE.lock();
-    'outer: for i in 0..MAX_FILES {
-        if !ft[i].used { continue; }
-        let mut j = 0usize;
-        while j < MAX_NAME {
-            let c = ft[i].name[j];
-            if c == 0 { break; }
-            if j >= name.len() { continue 'outer; }
-            if c != name[j] { continue 'outer; }
-            j += 1;
-        }
-        if j == name.len() {
-            return Some(i);
+        let m = &fs.metas[i];
+        if m.used {
+            let nlen = m.name_len as usize;
+            let nm = unsafe { core::str::from_utf8_unchecked(&m.name[..nlen]) };
+            cb(nm, m.len as usize);
         }
     }
-    None
 }
 
-fn alloc_fd() -> Option<usize> {
-    let mut fdt = FD_TABLE.lock();
-    for i in 0..MAX_FDS {
-        if !fdt[i].used {
-            fdt[i].used = true;
-            fdt[i].file_idx = 0;
-            fdt[i].pos = 0;
-            return Some(i + FD_BASE);
+fn write_internal(fs: &mut FsState, name: &str, data: &[u8]) -> Result<usize, FsError> {
+    if name.len() == 0 || name.len() > MAX_NAME {
+        return Err(FsError::NameTooLong);
+    }
+    if data.len() > MAX_FILE_SIZE {
+        return Err(FsError::FileTooLarge);
+    }
+
+    let idx = match fs.find_by_name(name) {
+        Some(i) => i,
+        None => {
+            let i = fs.find_free_slot().ok_or(FsError::NoSpace)?;
+            let mut meta = FileMeta::empty();
+            meta.used = true;
+            meta.name_len = name.len() as u8;
+            meta.len = 0;
+            meta.slot = i as u16;
+            meta.name[..name.len()].copy_from_slice(name.as_bytes());
+            fs.metas[i] = meta;
+            i
         }
-    }
-    None
+    };
+
+    let slot = fs.metas[idx].slot as usize;
+    let base = FsState::slot_base(slot);
+    let n = data.len();
+    fs.storage[base..base + n].copy_from_slice(&data[..]);
+    fs.metas[idx].len = n as u32;
+    Ok(n)
 }
 
-fn fd_to_index(fd: usize) -> Option<usize> {
-    if fd < FD_BASE { return None; }
-    let idx = fd - FD_BASE;
-    if idx >= MAX_FDS { return None; }
-    Some(idx)
+// Convenience helpers for shell integration
+pub fn cmd_ls() {
+    fs_list(|name, len| {
+        crate::vga::vprintln!("{:>6}  {}", len, name);
+    });
 }
 
-pub fn fs_create(name_ptr: *const u8, name_len: usize, data_ptr: *const u8, data_len: usize) -> usize {
-    if name_ptr.is_null() { return usize::MAX; }
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
-    if name_len == 0 || name_len >= MAX_NAME { return usize::MAX; }
-    if find_file_by_name(name).is_some() { return usize::MAX; }
-    let slot = match find_free_file_slot() { Some(s) => s, None => return usize::MAX };
-    let mut ft = FILE_TABLE.lock();
-    ft[slot].used = true;
-    for i in 0..MAX_NAME { ft[slot].name[i] = 0; }
-    ft[slot].name[..name_len].copy_from_slice(&name[..]);
-    let take = core::cmp::min(data_len, FILE_CAP);
-    if !data_ptr.is_null() && take > 0 {
-        let data = unsafe { core::slice::from_raw_parts(data_ptr, take) };
-        ft[slot].data[..take].copy_from_slice(&data[..]);
-        ft[slot].len = take;
-    } else {
-        ft[slot].len = 0;
-    }
-    slot
-}
-
-pub fn fs_open(name_ptr: *const u8, name_len: usize) -> usize {
-    if name_ptr.is_null() { return usize::MAX; }
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
-    if let Some(idx) = find_file_by_name(name) {
-        if let Some(fd) = alloc_fd() {
-            let mut fdt = FD_TABLE.lock();
-            fdt[fd - FD_BASE].file_idx = idx;
-            fdt[fd - FD_BASE].pos = 0;
-            return fd;
+pub fn cmd_cat(name: &str) {
+    match fs_len(name) {
+        Ok(len) => {
+            let mut buf = [0u8; MAX_FILE_SIZE];
+            let n = core::cmp::min(len, buf.len());
+            match fs_read(name, &mut buf[..n]) {
+                Ok(m) => {
+                    let s = core::str::from_utf8(&buf[..m]).unwrap_or("<binary>");
+                    crate::vga::vprintln!("{}", s);
+                }
+                Err(_) => crate::vga::vprintln!("cat: read error"),
+            }
         }
+        Err(_) => crate::vga::vprintln!("cat: not found"),
     }
-    usize::MAX
 }
 
-pub fn fs_read(fd: usize, buf_ptr: *mut u8, len: usize) -> usize {
-    let idx = match fd_to_index(fd) { Some(i) => i, None => return usize::MAX };
-    let mut fdt = FD_TABLE.lock();
-    if !fdt[idx].used { return usize::MAX; }
-    let file_idx = fdt[idx].file_idx;
-    let mut ft = FILE_TABLE.lock();
-    if !ft[file_idx].used { return usize::MAX; }
-    let available = ft[file_idx].len.saturating_sub(fdt[idx].pos);
-    if available == 0 { return 0; }
-    let to_copy = core::cmp::min(available, len);
-    if buf_ptr.is_null() { return usize::MAX; }
-    unsafe {
-        let dst = core::slice::from_raw_parts_mut(buf_ptr, to_copy);
-        let src = &ft[file_idx].data[fdt[idx].pos .. fdt[idx].pos + to_copy];
-        dst.copy_from_slice(src);
+pub fn cmd_write(name: &str, text: &str) {
+    match fs_write(name, text.as_bytes()) {
+        Ok(n) => crate::vga::vprintln!("wrote {} bytes to {}", n, name),
+        Err(FsError::NoSpace) => crate::vga::vprintln!("write: no space"),
+        Err(FsError::NameTooLong) => crate::vga::vprintln!("write: name too long"),
+        Err(FsError::FileTooLarge) => crate::vga::vprintln!("write: file too large"),
+        Err(FsError::NotFound) => crate::vga::vprintln!("write: not found"), // not hit here
     }
-    fdt[idx].pos += to_copy;
-    to_copy
-}
-
-pub fn fs_write(fd: usize, buf_ptr: *const u8, len: usize) -> usize {
-    let idx = match fd_to_index(fd) { Some(i) => i, None => return usize::MAX };
-    let mut fdt = FD_TABLE.lock();
-    if !fdt[idx].used { return usize::MAX; }
-    let file_idx = fdt[idx].file_idx;
-    let mut ft = FILE_TABLE.lock();
-    if !ft[file_idx].used { return usize::MAX; }
-    let space = FILE_CAP.saturating_sub(fdt[idx].pos);
-    if space == 0 { return 0; }
-    let to_copy = core::cmp::min(space, len);
-    if buf_ptr.is_null() || to_copy == 0 { return 0; }
-    unsafe {
-        let src = core::slice::from_raw_parts(buf_ptr, to_copy);
-        let dst = &mut ft[file_idx].data[fdt[idx].pos .. fdt[idx].pos + to_copy];
-        dst.copy_from_slice(src);
-    }
-    fdt[idx].pos += to_copy;
-    if fdt[idx].pos > ft[file_idx].len { ft[file_idx].len = fdt[idx].pos; }
-    to_copy
-}
-
-pub fn fs_close(fd: usize) -> usize {
-    let idx = match fd_to_index(fd) { Some(i) => i, None => return usize::MAX };
-    let mut fdt = FD_TABLE.lock();
-    if !fdt[idx].used { return usize::MAX; }
-    fdt[idx].used = false;
-    fdt[idx].file_idx = 0;
-    fdt[idx].pos = 0;
-    0
 }
