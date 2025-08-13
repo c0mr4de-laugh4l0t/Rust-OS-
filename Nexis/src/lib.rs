@@ -7,7 +7,7 @@ pub mod kb;
 pub mod memory;
 pub mod scheduler;
 pub mod task;
-pub mod fs; // <— added
+pub mod fs;
 
 // re-export PMM if needed
 pub use memory::PhysicalMemoryManager;
