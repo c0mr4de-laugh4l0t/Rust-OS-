@@ -1,57 +1,62 @@
-use spin::Mutex;
-use alloc::vec::Vec;
-use alloc::string::String;
+#![no_std]
 
-#[derive(Clone)]
-struct File {
-    name: String,
-    data: Vec<u8>,
+use core::fmt::Write;
+
+pub struct FileEntry {
+    pub name: &'static str,
+    pub data: &'static [u8],
 }
 
-lazy_static::lazy_static! {
-    static ref FILES: Mutex<Vec<File>> = Mutex::new(Vec::new());
-}
+static README_TXT: &str = "IronVeil / Nexis\nPhase 4 FS stub online.\n";
+static HELLO_TXT: &str = "Hello from the ramdisk!\n";
+
+static FILES: &[FileEntry] = &[
+    FileEntry { name: "readme.txt", data: README_TXT.as_bytes() },
+    FileEntry { name: "hello.txt",  data: HELLO_TXT.as_bytes()  },
+];
+
+static mut MOUNTED: bool = false;
 
 pub fn fs_init() {
-    FILES.lock().push(File {
-        name: "readme.txt".into(),
-        data: b"Welcome to the IronVeil / Nexis FS!".to_vec(),
-    });
+    unsafe { MOUNTED = true; }
+    crate::vga::vprintln!("FS: ramdisk mounted ({} files)", FILES.len());
 }
 
-pub fn list_files() {
-    let files = FILES.lock();
-    if files.is_empty() {
-        crate::vga::vprintln!("No files.");
-    } else {
-        for f in files.iter() {
-            crate::vga::vprintln!("{}", f.name);
+pub fn mounted() -> bool {
+    unsafe { MOUNTED }
+}
+
+pub fn list_files() -> usize {
+    for f in FILES {
+        crate::vga::vprintln!(" - {} ({} bytes)", f.name, f.data.len());
+    }
+    FILES.len()
+}
+
+pub fn get(name: &str) -> Option<&'static [u8]> {
+    if !mounted() { return None; }
+    for f in FILES {
+        if f.name == name {
+            return Some(f.data);
         }
     }
+    None
 }
 
-pub fn read_file(name: &str) {
-    let files = FILES.lock();
-    if let Some(f) = files.iter().find(|x| x.name == name) {
-        if let Ok(s) = core::str::from_utf8(&f.data) {
-            crate::vga::vprintln!("{}", s);
+pub fn print_file(name: &str) -> bool {
+    if let Some(bytes) = get(name) {
+        if let Ok(s) = core::str::from_utf8(bytes) {
+            crate::vga::vprint!("{}", s);
+            true
         } else {
-            crate::vga::vprintln!("<binary data>");
+            for &b in bytes {
+                let _ = write!(crate::vga::VGA_WRITER.lock(), "{:02x} ", b);
+            }
+            crate::vga::vprintln!("");
+            true
         }
     } else {
-        crate::vga::vprintln!("File not found: {}", name);
+        crate::vga::vprintln!("FS: file not found: {}", name);
+        false
     }
-}
-
-pub fn write_file(name: &str, data: &[u8]) {
-    let mut files = FILES.lock();
-    if let Some(f) = files.iter_mut().find(|x| x.name == name) {
-        f.data = data.to_vec();
-    } else {
-        files.push(File {
-            name: name.into(),
-            data: data.to_vec(),
-        });
-    }
-    crate::vga::vprintln!("Wrote {} bytes to {}", data.len(), name);
 }
