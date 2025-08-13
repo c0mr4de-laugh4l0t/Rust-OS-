@@ -1,95 +1,49 @@
-use std::io::{self, Write};
-use std::process::Command;
-use std::thread::sleep;
-use std::time::Duration;
-use std::path::Path;
+use std::{fs, process::Command, path::Path, io::{self, Write}};
+use sha2::{Sha256, Digest};
 
-fn main() {
-    banner();
-    loop {
-        print!("\x1b[38;5;208mironveil>\x1b[0m ");
-        io::stdout().flush().unwrap();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        let cmd = input.trim();
+fn main() -> io::Result<()> {
+    let kernel_dir = "../Nexis";
+    let kernel_src_hash_file = ".kernel_src_hash";
+    let kernel_bin = format!("{}/target/x86_64-nexis/debug/bootimage-nexis.bin", kernel_dir);
 
-        match cmd {
-            "help" => {
-                println!("\x1b[38;5;208mAvailable commands:\x1b[0m");
-                println!("  help    - Show this help message");
-                println!("  clear   - Clear the screen");
-                println!("  boot    - Build & boot the Nexis kernel in QEMU");
-                println!("  exit    - Quit IronVeil CLI");
-            }
-            "clear" => {
-                print!("\x1b[2J\x1b[H");
-            }
-            "boot" => {
-                let kernel_path = "../Nexis/target/x86_64-nexis/debug/bootimage-nexis.bin";
+    let new_hash = hash_source(kernel_dir)?;
+    let old_hash = fs::read_to_string(kernel_src_hash_file).unwrap_or_default();
 
-                if !Path::new(kernel_path).exists() {
-                    println!("\x1b[38;5;208mBoot image not found. Building Nexis kernel...\x1b[0m");
-                    let status = Command::new("cargo")
-                        .args(&["bootimage"])
-                        .current_dir("../Nexis")
-                        .status();
-
-                    match status {
-                        Ok(s) if s.success() => println!("\x1b[38;5;208mBuild successful!\x1b[0m"),
-                        Ok(s) => {
-                            eprintln!("\x1b[31mBuild failed with status {:?}\x1b[0m", s.code());
-                            continue;
-                        }
-                        Err(e) => {
-                            eprintln!("\x1b[31mFailed to run cargo bootimage: {}\x1b[0m", e);
-                            continue;
-                        }
-                    }
-                }
-
-                println!("\x1b[38;5;208mBooting Nexis kernel in QEMU...\x1b[0m");
-                let status = Command::new("qemu-system-x86_64")
-                    .args(&[
-                        "-drive", &format!("format=raw,file={}", kernel_path),
-                        "-serial", "stdio",
-                        "-m", "512M",
-                    ])
-                    .status();
-
-                match status {
-                    Ok(s) => println!("\x1b[38;5;208mQEMU exited with status: {:?}\x1b[0m", s.code()),
-                    Err(e) => eprintln!("\x1b[31mFailed to run QEMU: {}\x1b[0m", e),
-                }
-            }
-            "exit" => {
-                println!("\x1b[38;5;208mExiting IronVeil CLI...\x1b[0m");
-                break;
-            }
-            "" => {}
-            _ => {
-                println!("\x1b[31mUnknown command: {}\x1b[0m", cmd);
-            }
+    if new_hash != old_hash || !Path::new(&kernel_bin).exists() {
+        println!("Kernel source changed — rebuilding...");
+        let status = Command::new("cargo")
+            .arg("bootimage")
+            .current_dir(kernel_dir)
+            .status()?;
+        if !status.success() {
+            eprintln!("Build failed.");
+            return Ok(());
         }
+        fs::write(kernel_src_hash_file, &new_hash)?;
+        println!("Build complete.");
+    } else {
+        println!("No changes detected — skipping build.");
     }
+
+    println!("Booting in QEMU...");
+    Command::new("qemu-system-x86_64")
+        .args([
+            "-drive", &format!("format=raw,file={}", kernel_bin),
+            "-serial", "stdio",
+        ])
+        .status()?;
+
+    Ok(())
 }
 
-fn banner() {
-    let banner_lines = [
-        "██╗██████╗  ██████╗ ███╗   ██╗██╗   ██╗███████╗██╗██╗     ",
-        "██║██╔══██╗██╔═══██╗████╗  ██║██║   ██║██╔════╝██║██║     ",
-        "██║██████╔╝██║   ██║██╔██╗ ██║██║   ██║█████╗  ██║██║     ",
-        "██║██╔══██╗██║   ██║██║╚██╗██║╚██╗ ██╔╝██╔══╝  ██║██║     ",
-        "██║██║  ██║╚██████╔╝██║ ╚████║ ╚████╔╝ ███████╗██║███████╗",
-        "╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝  ╚═══╝  ╚══════╝╚═╝╚══════╝",
-    ];
-    print!("\x1b[2J\x1b[H");
-    for line in &banner_lines {
-        for c in line.chars() {
-            print!("\x1b[38;5;208m{}\x1b[0m", c);
-            io::stdout().flush().unwrap();
-            sleep(Duration::from_millis(2));
+fn hash_source(dir: &str) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    for entry in walkdir::WalkDir::new(dir) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            let data = fs::read(entry.path())?;
+            hasher.update(data);
         }
-        println!();
     }
-    println!();
+    Ok(format!("{:x}", hasher.finalize()))
 }
