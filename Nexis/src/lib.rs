@@ -1,11 +1,13 @@
-mod memory;
-use memory::{PhysicalMemoryManager, FRAME_SIZE, PhysFrame};
+#![no_std]
+#![no_main]
 
-// Global manager (static)
-use spin::Mutex as SpinMutex;
-static mut PMM: PhysicalMemoryManager = PhysicalMemoryManager::new_uninit();
+pub mod interrupts;
+pub mod vga;
+pub mod kb;
+pub mod memory;
+pub mod scheduler;
+pub mod task;
+pub mod fs; // <— added
 
-// Simple safe wrapper to access PMM (unsafe still internally)
-pub fn pmm() -> &'static PhysicalMemoryManager {
-    unsafe { &PMM }
-}
+// re-export PMM if needed
+pub use memory::PhysicalMemoryManager;
