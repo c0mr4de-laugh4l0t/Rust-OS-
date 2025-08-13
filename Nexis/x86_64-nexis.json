@@ -1,21 +1,19 @@
 {
   "llvm-target": "x86_64-unknown-none",
-  "target-endian": "little",
-  "target-pointer-width": "64",
-  "target-c-int-width": "32",
   "data-layout": "e-m:e-i64:64-f80:128-n8:16:32:64-S128",
   "arch": "x86_64",
   "os": "none",
   "vendor": "unknown",
   "linker-flavor": "ld.lld",
-  "linker": "ld.lld",
+  "linker": "rust-lld",
   "executables": true,
-  "dynamic-linking": false,
   "disable-redzone": true,
   "panic-strategy": "abort",
   "features": "-mmx,-sse,+soft-float",
   "relocation-model": "static",
   "code-model": "kernel",
   "eliminate-frame-pointer": false,
-  "max-atomic-width": 64
+  "max-atomic-width": 64,
+  "target-pointer-width": "64",
+  "target-c-int-width": "32"
 }
