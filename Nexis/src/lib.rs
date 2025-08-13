@@ -15,5 +15,6 @@ mod alloc;
 fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
     panic!("Allocation error: {:?}", layout);
 }
+
 // re-export PMM if needed
 pub use memory::PhysicalMemoryManager;
