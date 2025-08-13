@@ -1,13 +1,13 @@
 #![no_std]
 
-use core::fmt::Write;
+use core::str;
 
 pub struct FileEntry {
     pub name: &'static str,
     pub data: &'static [u8],
 }
 
-static README_TXT: &str = "IronVeil / Nexis\nPhase 4 FS stub online.\n";
+static README_TXT: &str = "IronVeil / Nexis\nPhase 4 FS online.\n";
 static HELLO_TXT: &str = "Hello from the ramdisk!\n";
 
 static FILES: &[FileEntry] = &[
@@ -45,7 +45,7 @@ pub fn get(name: &str) -> Option<&'static [u8]> {
 
 pub fn print_file(name: &str) -> bool {
     if let Some(bytes) = get(name) {
-        if let Ok(s) = core::str::from_utf8(bytes) {
+        if let Ok(s) = str::from_utf8(bytes) {
             crate::vga::vprint!("{}", s);
             true
         } else {
