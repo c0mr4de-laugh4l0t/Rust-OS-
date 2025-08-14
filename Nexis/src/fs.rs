@@ -1,62 +1,58 @@
 #![no_std]
 
-use core::str;
+extern crate alloc;
 
-pub struct FileEntry {
-    pub name: &'static str,
-    pub data: &'static [u8],
+use alloc::vec::Vec;
+use spin::Mutex;
+use lazy_static::lazy_static;
+
+struct FileEntry {
+    name: &'static str,
+    data: &'static [u8],
 }
 
-static README_TXT: &str = "IronVeil / Nexis\nPhase 4 FS online.\n";
-static HELLO_TXT: &str = "Hello from the ramdisk!\n";
-
-static FILES: &[FileEntry] = &[
-    FileEntry { name: "readme.txt", data: README_TXT.as_bytes() },
-    FileEntry { name: "hello.txt",  data: HELLO_TXT.as_bytes()  },
-];
-
-static mut MOUNTED: bool = false;
+lazy_static! {
+    static ref FS: Mutex<Vec<FileEntry>> = Mutex::new(Vec::new());
+}
 
 pub fn fs_init() {
-    unsafe { MOUNTED = true; }
-    crate::vga::vprintln!("FS: ramdisk mounted ({} files)", FILES.len());
+    let mut fs = FS.lock();
+    if !fs.is_empty() { return; }
+    fs.push(FileEntry {
+        name: "README.txt",
+        data: b"IronVeil / Nexis\nType 'help' for commands.\n",
+    });
+    fs.push(FileEntry {
+        name: "LICENSE.txt",
+        data: b"All rights reserved. Demo in-kernel FS.\n",
+    });
+    fs.push(FileEntry {
+        name: "motd.txt",
+        data: b"Welcome to IronVeil/Nexis kernel shell.\n",
+    });
 }
 
-pub fn mounted() -> bool {
-    unsafe { MOUNTED }
-}
-
-pub fn list_files() -> usize {
-    for f in FILES {
-        crate::vga::vprintln!(" - {} ({} bytes)", f.name, f.data.len());
+pub fn list_files() {
+    let fs = FS.lock();
+    if fs.is_empty() {
+        crate::vga::vprintln!("<fs empty>");
+        return;
     }
-    FILES.len()
-}
-
-pub fn get(name: &str) -> Option<&'static [u8]> {
-    if !mounted() { return None; }
-    for f in FILES {
-        if f.name == name {
-            return Some(f.data);
-        }
+    for f in fs.iter() {
+        crate::vga::vprintln!("{} ({} bytes)", f.name, f.data.len());
     }
-    None
 }
 
-pub fn print_file(name: &str) -> bool {
-    if let Some(bytes) = get(name) {
-        if let Ok(s) = str::from_utf8(bytes) {
-            crate::vga::vprint!("{}", s);
-            true
+pub fn print_file(name: &str) {
+    let fs = FS.lock();
+    if let Some(f) = fs.iter().find(|e| e.name == name) {
+        if let Ok(s) = core::str::from_utf8(f.data) {
+            crate::vga::vprintln!("{}", s);
         } else {
-            for &b in bytes {
-                let _ = write!(crate::vga::VGA_WRITER.lock(), "{:02x} ", b);
-            }
-            crate::vga::vprintln!("");
-            true
+            crate::vga::vprintln!("<binary file: {} bytes>", f.data.len());
         }
     } else {
-        crate::vga::vprintln!("FS: file not found: {}", name);
-        false
+        crate::vga::vprintln!("file not found: {}", name);
     }
 }
+```0
