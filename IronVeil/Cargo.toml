@@ -4,13 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-walkdir = "2.5"
-sha2 = "0.10"
-
-[profile.dev]
-opt-level = 1
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
+crossterm = "0.27"
+tui = "0.19"          
+rand = { version = "0.8", features = ["std", "small_rng"] }
+chrono = "0.4"
+dirs = "5"
