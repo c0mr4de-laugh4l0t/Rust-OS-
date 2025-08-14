@@ -1,58 +1,46 @@
-#![no_std]
-
-extern crate alloc;
-
 use alloc::vec::Vec;
+use alloc::string::String;
 use spin::Mutex;
 use lazy_static::lazy_static;
 
-struct FileEntry {
-    name: &'static str,
-    data: &'static [u8],
+pub struct File {
+    pub name: String,
+    pub contents: String,
 }
 
 lazy_static! {
-    static ref FS: Mutex<Vec<FileEntry>> = Mutex::new(Vec::new());
+    static ref FS: Mutex<Vec<File>> = Mutex::new(Vec::new());
 }
 
 pub fn fs_init() {
     let mut fs = FS.lock();
-    if !fs.is_empty() { return; }
-    fs.push(FileEntry {
-        name: "README.txt",
-        data: b"IronVeil / Nexis\nType 'help' for commands.\n",
+    fs.push(File {
+        name: String::from("readme.txt"),
+        contents: String::from("Welcome to IronVeil Nexis FS!"),
     });
-    fs.push(FileEntry {
-        name: "LICENSE.txt",
-        data: b"All rights reserved. Demo in-kernel FS.\n",
-    });
-    fs.push(FileEntry {
-        name: "motd.txt",
-        data: b"Welcome to IronVeil/Nexis kernel shell.\n",
+    fs.push(File {
+        name: String::from("license.txt"),
+        contents: String::from("All rights reserved."),
     });
 }
 
 pub fn list_files() {
     let fs = FS.lock();
     if fs.is_empty() {
-        crate::vga::vprintln!("<fs empty>");
-        return;
-    }
-    for f in fs.iter() {
-        crate::vga::vprintln!("{} ({} bytes)", f.name, f.data.len());
+        crate::vga::vprintln!("No files found.");
+    } else {
+        crate::vga::vprintln!("Files:");
+        for file in fs.iter() {
+            crate::vga::vprintln!(" - {}", file.name);
+        }
     }
 }
 
-pub fn print_file(name: &str) {
+pub fn print_file(filename: &str) {
     let fs = FS.lock();
-    if let Some(f) = fs.iter().find(|e| e.name == name) {
-        if let Ok(s) = core::str::from_utf8(f.data) {
-            crate::vga::vprintln!("{}", s);
-        } else {
-            crate::vga::vprintln!("<binary file: {} bytes>", f.data.len());
-        }
+    if let Some(file) = fs.iter().find(|f| f.name == filename) {
+        crate::vga::vprintln!("{}", file.contents);
     } else {
-        crate::vga::vprintln!("file not found: {}", name);
+        crate::vga::vprintln!("File not found: {}", filename);
     }
 }
-```0
