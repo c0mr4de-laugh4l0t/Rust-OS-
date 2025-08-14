@@ -1,4 +1,4 @@
-
+0
 ██╗██████╗  ██████╗ ███╗   ██╗██╗   ██╗███████╗██╗██╗     
 ██║██╔══██╗██╔═══██╗████╗  ██║██║   ██║██╔════╝██║██║     
 ██║██████╔╝██║   ██║██╔██╗ ██║██║   ██║█████╗  ██║██║     
@@ -93,7 +93,4 @@ reboot         Halt the kernel (restart in QEMU)
 
 Licensed under the MIT License.
 
-
-
-Do you want me to also write your MIT LICENSE file so you can paste it into LICENSE in the root? That way your GitHub repo will be fully ready.
 
