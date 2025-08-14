@@ -9,8 +9,7 @@
 ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝  ╚═══╝  ╚══════╝╚═╝╚══════╝
 ```
 
-IronVeil is a Rust-based privacy-focused OS built on the Nexis custom kernel.  
-It features a TUI shell, fake IP/MAC generation, password generation, and a minimal FS interface.
+IronVeil + Nexis is a privacy-first, modular OS with a Rust-based kernel that prevents unsafe memory access, making it far more secure than traditional C-based systems. It features Tor-based IP randomization, MAC spoofing, encrypted persistence, preemptive multitasking, and a modern CLI/TUI for safe, hands-on system experimentation.
 
 ---
 
