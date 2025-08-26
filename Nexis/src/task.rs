@@ -11,13 +11,12 @@ pub fn prepare_stack(entry: extern "C" fn(), stack_base: usize, stack_size: usiz
         sp -= core::mem::size_of::<usize>();
         (sp as *mut usize).write_volatile(0usize);
 
-        // push rbx, r12, r13, r14, r15 placeholders in reverse order so pop restores correctly
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // rbx
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r12
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r13
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r14
+        // push r15 → r12 → rbx placeholders (reverse order for pop restore)
         sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r15
+        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r14
+        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r13
+        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r12
+        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // rbx
     }
     sp
 }
-//switch so it is r15 down to r12
