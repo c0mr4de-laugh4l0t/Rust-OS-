@@ -1,34 +1,39 @@
-/* Minimal linker script that defines kernel start/end symbols.
-   It keeps the standard layout but exposes __kernel_start and __kernel_end
-   for kernel to locate its own end in physical memory. */
-
 OUTPUT_FORMAT("elf64-x86-64")
 ENTRY(_start)
 
 SECTIONS
 {
-  /* keep text, rodata, data, bss as usual */
-  . = ALIGN(0x1000);
-  __kernel_start = .;
+  /* place kernel at 1 MiB to avoid low-memory issues with real-mode structures */
+  . = 0x0010_0000;
 
-  .text : {
-    *(.text.entry)   /* bootloader or _start goes here */
+  .text ALIGN(4096) : {
+    __kernel_start = .;
+    *(.multiboot)      /* if you use multiboot / bootloader sections */
     *(.text .text.*)
-  } :text
-
-  .rodata : { *(.rodata .rodata.*) }
-
-  .data : { *(.data .data.*) }
-
-  .bss : {
-    __bss_start = .;
-    *(.bss .bss.*)
-    __bss_end = .;
+    *(.rodata .rodata.*)
+    PROVIDE(__text_start = .);
   } 
 
-  /* export symbol marking kernel end */
+  .rodata ALIGN(4096) : {
+    *(.rodata .rodata.*)
+  }
+
+  .data ALIGN(4096) : {
+    *(.data .data.*)
+    PROVIDE(__data_start = .);
+  }
+
+  .bss (NOLOAD) ALIGN(4096) : {
+    __bss_start = .;
+    *(.bss .bss.*)
+    *(COMMON)
+    __bss_end = .;
+  }
+
+  /* symbol that marks end of kernel image */
   __kernel_end = .;
 
-  /* keep alignment at page size */
-  /DISCARD/ : { *(.eh_frame) }
+  /DISCARD/ : {
+    *(.eh_frame)
+  }
 }
