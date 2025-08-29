@@ -1,10 +1,13 @@
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+// Nexis/src/interrupts.rs
+#![no_std]
+
 use lazy_static::lazy_static;
 use spin::Mutex;
-use x86_64::instructions::{interrupts, port::Port};
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::instructions::interrupts;
+use x86_64::instructions::port::Port;
 
 use crate::kb::Kb;
-use crate::syscall;
 
 pub const PIC1_COMMAND: u16 = 0x20;
 pub const PIC1_DATA: u16 = 0x21;
@@ -17,8 +20,8 @@ lazy_static! {
 
 pub fn init_idt() {
     let mut idt = InterruptDescriptorTable::new();
-    idt[33].set_handler_fn(keyboard_interrupt);
-    idt[0x80].set_handler_fn(syscall_interrupt);
+    idt[33].set_handler_fn(keyboard_interrupt); // keyboard
+    idt[0x80].set_handler_fn(syscall_interrupt); // syscalls
     *IDT.lock() = Some(idt);
     if let Some(ref i) = *IDT.lock() {
         i.load();
@@ -31,16 +34,22 @@ pub fn remap_pic() {
         let mut a2 = Port::<u8>::new(PIC2_DATA);
         let mask1 = a1.read();
         let mask2 = a2.read();
+
         let mut cmd1 = Port::<u8>::new(PIC1_COMMAND);
         let mut cmd2 = Port::<u8>::new(PIC2_COMMAND);
+
         cmd1.write(0x11);
         cmd2.write(0x11);
+
         a1.write(0x20);
         a2.write(0x28);
+
         a1.write(4);
         a2.write(2);
+
         a1.write(0x01);
         a2.write(0x01);
+
         a1.write(mask1);
         a2.write(mask2);
     }
@@ -71,18 +80,23 @@ extern "x86-interrupt" fn keyboard_interrupt(_stack_frame: &mut InterruptStackFr
 }
 
 extern "x86-interrupt" fn syscall_interrupt(_stack_frame: &mut InterruptStackFrame) {
+    use core::arch::asm;
+
     let num: usize;
     let a1: usize;
     let a2: usize;
     let a3: usize;
+
     unsafe {
-        core::arch::asm!("mov {}, rax", out(reg) num);
-        core::arch::asm!("mov {}, rdi", out(reg) a1);
-        core::arch::asm!("mov {}, rsi", out(reg) a2);
-        core::arch::asm!("mov {}, rdx", out(reg) a3);
+        asm!("mov {}, rax", out(reg) num);
+        asm!("mov {}, rdi", out(reg) a1);
+        asm!("mov {}, rsi", out(reg) a2);
+        asm!("mov {}, rdx", out(reg) a3);
     }
-    let ret = syscall::call(num as u64, a1, a2, a3);
+
+    let ret = crate::syscall::syscall_handler(num, a1, a2, a3);
+
     unsafe {
-        core::arch::asm!("mov rax, {}", in(reg) ret);
+        asm!("mov rax, {}", in(reg) ret);
     }
 }
