@@ -2,18 +2,33 @@
 name = "nexis"
 version = "0.1.0"
 edition = "2021"
-publish = false
-build = "build.rs"
 
 [dependencies]
-bootloader = "0.11.0"
-uart_16550 = "0.2"
-spin = "0.9"
-lazy_static = "1.4"
-pc-keyboard = "0.6"
+bootloader = "0.10"
 x86_64 = "0.14"
-alloc = { package = "alloc", version = "0.0.1", features = [] }
-linked_list_allocator = "0.10.5"
+spin = "0.9"
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+
+[dev-dependencies]
+bootimage = "0.10"
+
+[features]
+default = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[package.metadata.bootimage]
+build-command = ["xbuild"]
+run-command = [
+    "qemu-system-x86_64",
+    "-drive", "format=raw,file=target/x86_64-nexis/debug/bootimage-nexis.bin",
+    "-serial", "stdio",
+    "-display", "default,show-cursor=on"
+]
 
 [build-dependencies]
-cc = "1.0"
+bootloader = "0.10"
