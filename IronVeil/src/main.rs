@@ -17,6 +17,49 @@ use tui::{
     Terminal,
 };
 
+#[cfg(feature = "kernel")]
+mod os {
+    #[inline]
+    pub fn write(s: &str) {
+        unsafe {
+            core::arch::asm!(
+                "mov rax, 0",
+                "mov rdi, {ptr}",
+                "mov rsi, {len}",
+                "int 0x80",
+                ptr = in(reg) s.as_ptr(),
+                len = in(reg) s.len(),
+                out("rax") _,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+    #[allow(dead_code)]
+    pub fn exit(code: i32) -> ! {
+        unsafe {
+            core::arch::asm!(
+                "mov rax, 1",
+                "mov rdi, {code}",
+                "int 0x80",
+                code = in(reg) code,
+                options(noreturn)
+            );
+        }
+    }
+}
+
+#[cfg(not(feature = "kernel"))]
+mod os {
+    #[inline]
+    pub fn write(s: &str) {
+        print!("{s}");
+    }
+    #[allow(dead_code)]
+    pub fn exit(_code: i32) -> ! {
+        std::process::exit(0);
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Tab {
     Dashboard,
@@ -39,11 +82,11 @@ impl Tab {
     fn title(self) -> &'static str {
         match self {
             Tab::Dashboard => "Dashboard",
-            Tab::Security  => "Security",
-            Tab::Network   => "Network",
-            Tab::Files     => "Files",
-            Tab::Logs      => "Logs",
-            Tab::About     => "About",
+            Tab::Security => "Security",
+            Tab::Network => "Network",
+            Tab::Files => "Files",
+            Tab::Logs => "Logs",
+            Tab::About => "About",
         }
     }
 }
@@ -77,24 +120,33 @@ impl App {
     }
 
     fn log<S: Into<String>>(&mut self, s: S) {
+        let s = s.into();
         let ts = Local::now().format("%H:%M:%S");
-        self.logs.push(format!("[{}] {}", ts, s.into()));
+        let line = format!("[{}] {}\n", ts, &s);
+        self.logs.push(line.trim_end().to_string());
         if self.logs.len() > 2000 {
             self.logs.drain(0..self.logs.len() - 2000);
         }
+        os::write(&line);
     }
 
     fn refresh_files(&mut self) {
-        // demo: list home dir entries (non-recursive)
         self.files.clear();
-        if let Some(home) = dirs::home_dir() {
-            if let Ok(read_dir) = std::fs::read_dir(home) {
-                for e in read_dir.flatten().take(200) {
-                    if let Some(name) = e.file_name().to_str() {
-                        self.files.push(name.to_string());
+        #[cfg(not(feature = "kernel"))]
+        {
+            if let Some(home) = dirs::home_dir() {
+                if let Ok(read_dir) = std::fs::read_dir(home) {
+                    for e in read_dir.flatten().take(200) {
+                        if let Some(name) = e.file_name().to_str() {
+                            self.files.push(name.to_string());
+                        }
                     }
                 }
             }
+        }
+        #[cfg(feature = "kernel")]
+        {
+            self.files.clear();
         }
     }
 
@@ -141,18 +193,40 @@ impl App {
         match cmd.trim() {
             "" => {}
             "help" => {
-                self.log("Commands: help, genpass, ip, mac, vpn, sdel <name>, clear");
+                self.log("Commands: help, genpass, ip, mac, vpn, sdel <name>, clear, exit");
             }
-            "genpass" => { let _ = self.gen_password(); }
-            "ip" => { let _ = self.fake_ip(); }
-            "mac" => { let _ = self.fake_mac(); }
+            "genpass" => {
+                let _ = self.gen_password();
+            }
+            "ip" => {
+                let _ = self.fake_ip();
+            }
+            "mac" => {
+                let _ = self.fake_mac();
+            }
             "vpn" => self.toggle_vpn(),
             x if x.starts_with("sdel ") => {
                 let name = x.trim_start_matches("sdel ").trim();
-                if name.is_empty() { self.log("Usage: sdel <name>"); }
-                else { self.secure_delete(name); }
+                if name.is_empty() {
+                    self.log("Usage: sdel <name>");
+                } else {
+                    self.secure_delete(name);
+                }
             }
-            "clear" => { self.logs.clear(); }
+            "clear" => {
+                self.logs.clear();
+            }
+            "exit" => {
+                self.log("Exiting...");
+                #[cfg(feature = "kernel")]
+                {
+                    os::exit(0);
+                }
+                #[cfg(not(feature = "kernel"))]
+                {
+                    std::process::exit(0);
+                }
+            }
             other => {
                 self.log(format!("Unknown: '{}'", other));
             }
@@ -225,14 +299,20 @@ fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
         (_, KeyCode::Enter) => {
             match app.tab {
                 Tab::Security => match app.sidebar_idx {
-                    0 => { let _ = app.gen_password(); }
+                    0 => {
+                        let _ = app.gen_password();
+                    }
                     1 => app.secure_delete("secret.txt"),
                     2 => app.toggle_vpn(),
                     _ => {}
                 },
                 Tab::Network => match app.sidebar_idx {
-                    0 => { let _ = app.fake_ip(); }
-                    1 => { let _ = app.fake_mac(); }
+                    0 => {
+                        let _ = app.fake_ip();
+                    }
+                    1 => {
+                        let _ = app.fake_mac();
+                    }
                     _ => {}
                 },
                 Tab::Files => match app.sidebar_idx {
@@ -272,14 +352,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<bool> {
             app.input.pop();
         }
         (_, KeyCode::Char(c)) => {
-            if app.tab == Tab::Logs {
-                // typing in Logs tab just logs
-                if c == '\n' { app.run_command(&app.input); app.input.clear(); }
-                else { app.input.push(c); }
+            if c == '\n' {
+                app.run_command(&app.input);
+                app.input.clear();
             } else {
-                // global command line at bottom always active
-                if c == '\n' { app.run_command(&app.input); app.input.clear(); }
-                else { app.input.push(c); }
+                app.input.push(c);
             }
         }
 
@@ -306,7 +383,7 @@ fn draw_banner<B: tui::backend::Backend>(f: &mut tui::Frame<B>, area: Rect) {
          ██║██████╔╝██║   ██║██╔██╗ ██║██║   ██║█████╗  ██║██║     \n\
          ██║██╔══██╗██║   ██║██║╚██╗██║╚██╗ ██╔╝██╔══╝  ██║██║     \n\
          ██║██║  ██║╚██████╔╝██║ ╚████║ ╚████╔╝ ███████╗██║███████╗\n\
-         ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝  ╚═══╝  ╚══════╝╚═╝╚══════╝",
+         ╚═╝╚═╝  ╚═════╝ ╚═╝  ╚═══╝  ╚═══╝  ╚══════╝╚═╝╚══════╝",
         Style::default().fg(Color::Indexed(208)).add_modifier(Modifier::BOLD),
     ))];
     let block = Paragraph::new(title).wrap(Wrap { trim: false });
@@ -336,7 +413,6 @@ fn draw_sidebar<B: tui::backend::Backend>(f: &mut tui::Frame<B>, area: Rect, app
 
     f.render_widget(tabs, area);
 
-    // Below tabs: context actions
     let inner = Rect { x: area.x, y: area.y + 3, width: area.width, height: area.height.saturating_sub(3) };
     let items = sidebar_items(app.tab);
     let list_items: Vec<ListItem> = items.iter().enumerate().map(|(i, s)| {
@@ -354,11 +430,11 @@ fn draw_sidebar<B: tui::backend::Backend>(f: &mut tui::Frame<B>, area: Rect, app
 fn sidebar_items(tab: Tab) -> &'static [&'static str] {
     match tab {
         Tab::Dashboard => &["Status refresh", "Show time"],
-        Tab::Security  => &["Generate password", "Secure delete", "Toggle VPN"],
-        Tab::Network   => &["Fake IPv4", "Fake MAC"],
-        Tab::Files     => &["Refresh list", "Open selected"],
-        Tab::Logs      => &["Clear logs"],
-        Tab::About     => &["Project site", "License"],
+        Tab::Security => &["Generate password", "Secure delete", "Toggle VPN"],
+        Tab::Network => &["Fake IPv4", "Fake MAC"],
+        Tab::Files => &["Refresh list", "Open selected"],
+        Tab::Logs => &["Clear logs"],
+        Tab::About => &["Project site", "License"],
     }
 }
 
@@ -423,6 +499,7 @@ fn draw_main<B: tui::backend::Backend>(f: &mut tui::Frame<B>, area: Rect, app: &
 
             if let Some(sel) = app.selected_file {
                 let name = &app.files[sel];
+                #[cfg(not(feature = "kernel"))]
                 if let Some(home) = dirs::home_dir() {
                     let path = home.join(name);
                     let mut preview = String::new();
@@ -449,7 +526,7 @@ fn draw_main<B: tui::backend::Backend>(f: &mut tui::Frame<B>, area: Rect, app: &
             let text = vec![
                 Spans::from(Span::styled("IronVeil", Style::default().add_modifier(Modifier::BOLD))),
                 Spans::from("User-space shell & tools (hosted)."),
-                Spans::from("Roadmap: hook to Nexis syscalls, add real FS, multitasking UI."),
+                Spans::from("When built with feature `kernel`, logs also go through Nexis `int 0x80` (sys_write)."),
             ];
             let p = Paragraph::new(text)
                 .block(Block::default().borders(Borders::ALL).title("About"))
