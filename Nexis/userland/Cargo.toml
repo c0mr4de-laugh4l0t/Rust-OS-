@@ -1,0 +1,21 @@
+[package]
+name = "userland"
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+panic = "abort"
+lto = true
+
+[dependencies]
+# none; no_std binary
+
+[lib]
+crate-type = ["staticlib"]  # or omit; we'll produce a bin via [[bin]] below
+
+[[bin]]
+name = "userland"
+path = "src/main.rs"
+
+[build]
+# empty
