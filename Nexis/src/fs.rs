@@ -1,46 +1,51 @@
-use alloc::vec::Vec;
-use alloc::string::String;
-use spin::Mutex;
-use lazy_static::lazy_static;
+// Nexis/src/fs.rs
+#![no_std]
 
-pub struct File {
-    pub name: String,
-    pub contents: String,
-}
+use core::ptr;
 
-lazy_static! {
-    static ref FS: Mutex<Vec<File>> = Mutex::new(Vec::new());
-}
+const DEMO_FILES: [&str; 2] = ["readme.txt", "hello.txt"];
+const DEMO_CONTENTS: [&str; 2] = [
+    "This is a demo file system.\n",
+    "Hello from Nexis FS layer!\n",
+];
 
-pub fn fs_init() {
-    let mut fs = FS.lock();
-    fs.push(File {
-        name: String::from("readme.txt"),
-        contents: String::from("Welcome to IronVeil Nexis FS!"),
-    });
-    fs.push(File {
-        name: String::from("license.txt"),
-        contents: String::from("All rights reserved."),
-    });
-}
+pub fn fs_init() {}
 
-pub fn list_files() {
-    let fs = FS.lock();
-    if fs.is_empty() {
-        crate::vga::vprintln!("No files found.");
-    } else {
-        crate::vga::vprintln!("Files:");
-        for file in fs.iter() {
-            crate::vga::vprintln!(" - {}", file.name);
+pub fn list_files_syscall(out_buf: *mut u8, out_buf_len: usize) -> usize {
+    if out_buf.is_null() || out_buf_len == 0 {
+        return 0;
+    }
+    let mut written = 0;
+    for name in DEMO_FILES {
+        let line = format!("{}\n", name);
+        let bytes = line.as_bytes();
+        for &b in bytes {
+            if written >= out_buf_len {
+                return written;
+            }
+            unsafe { ptr::write(out_buf.add(written), b); }
+            written += 1;
         }
     }
+    written
 }
 
-pub fn print_file(filename: &str) {
-    let fs = FS.lock();
-    if let Some(file) = fs.iter().find(|f| f.name == filename) {
-        crate::vga::vprintln!("{}", file.contents);
-    } else {
-        crate::vga::vprintln!("File not found: {}", filename);
+pub fn read_file_syscall(filename_ptr: *const u8, filename_len: usize, out_buf: *mut u8) -> usize {
+    if filename_ptr.is_null() || out_buf.is_null() {
+        return 0;
     }
+    let name = unsafe {
+        let slice = core::slice::from_raw_parts(filename_ptr, filename_len);
+        core::str::from_utf8(slice).unwrap_or("")
+    };
+    for (i, fname) in DEMO_FILES.iter().enumerate() {
+        if *fname == name {
+            let data = DEMO_CONTENTS[i].as_bytes();
+            for (j, &b) in data.iter().enumerate() {
+                unsafe { ptr::write(out_buf.add(j), b); }
+            }
+            return data.len();
+        }
+    }
+    0
 }
