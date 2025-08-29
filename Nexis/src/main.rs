@@ -1,58 +1,38 @@
 #![no_std]
 #![no_main]
 
-pub mod alloc;
-pub mod context;
-pub mod interrupt;
-pub mod pit;
-pub mod kb;
-pub mod vga;
-pub mod memory;
-pub mod task;
-pub mod scheduler;
-pub mod process;
-pub mod syscall;
-pub mod syscall_dispatch;
-pub mod fs;
-pub mod userland;
-pub mod lib;
-
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
-use vga::VgaWriter;
-use crate::vga::VGA_WRITER;
-use crate::kb::Kb;
-use memory::PhysicalMemoryManager;
 
-static mut PMM: PhysicalMemoryManager = PhysicalMemoryManager::new_uninit();
+use nexis::{interrupts, kb::Kb, vga::{self, VGA_WRITER}, memory::{self, PhysicalMemoryManager, FRAME_SIZE}, scheduler, fs};
 
 entry_point!(kernel_main);
 
+static mut PMM: PhysicalMemoryManager = PhysicalMemoryManager::new_uninit();
+
 fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    interrupt::init_idt();
-    interrupt::remap_pic();
-    interrupt::enable_interrupts();
+    interrupts::init_idt();
+    interrupts::remap_pic();
+    interrupts::enable_interrupts();
 
     {
         let mut vw = VGA_WRITER.lock();
         vw.clear_screen();
         vw.write_str("\n=== IronVeil / Nexis Kernel ===\n");
-        vw.write_str("Type 'help' for commands.\n\n");
+        vw.write_str("IRQ keyboard + PMM + Scheduler + Syscalls + FS\n\n");
     }
 
-    crate::vga::sprintln!("\n=== IronVeil / Nexis Kernel (serial) ===");
+    vga::sprintln!("\n=== Nexis serial output ===");
+    vga::sprintln!("System initialized. Type 'help'.\n");
 
-    unsafe {
-        pmm_setup_linker();
-    }
-
-    fs::fs_init();
+    unsafe { pmm_setup_linker(); }
     Kb::init();
+    fs::fs_init();
 
     extern "C" fn demo_task() {
         let mut i: u64 = 0;
         loop {
-            crate::vga::vprintln!("demo_task: tick {}", i);
+            vga::vprintln!("demo_task tick {}", i);
             i = i.wrapping_add(1);
             for _ in 0..200_000 { core::hint::spin_loop(); }
             scheduler::task_yield();
@@ -72,6 +52,7 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
 }
 
 fn shell_loop() -> ! {
+    use kb::Kb;
     let mut rng = kb::XorShift64::new(0xabcdef123456789u64);
 
     loop {
@@ -86,21 +67,17 @@ fn shell_loop() -> ! {
                 vga::vprintln!("Available commands:");
                 vga::vprintln!("  help       - this message");
                 vga::vprintln!("  clear|cls  - clear screen");
-                vga::vprintln!("  genpass    - generate a 16-char password");
+                vga::vprintln!("  genpass    - generate password");
                 vga::vprintln!("  ip         - fake IPv4");
                 vga::vprintln!("  mac        - fake MAC");
-                vga::vprintln!("  reboot     - halt (restart QEMU)");
-                vga::vprintln!("  fs ls      - list files");
-                vga::vprintln!("  fs cat <file> - print file contents");
+                vga::vprintln!("  reboot     - halt");
+                vga::vprintln!("  fs ls      - list demo files");
+                vga::vprintln!("  fs cat <f> - print file contents");
             }
-            "clear" | "cls" => {
-                VGA_WRITER.lock().clear_screen();
-            }
+            "clear" | "cls" => VGA_WRITER.lock().clear_screen(),
             "genpass" => {
                 let mut pass = [0u8; 16];
-                for i in 0..16 {
-                    pass[i] = rng.next_range_u8(33u8, 126u8);
-                }
+                for i in 0..16 { pass[i] = rng.next_range_u8(33u8, 126u8); }
                 let p = unsafe { core::str::from_utf8_unchecked(&pass) };
                 vga::vprintln!("Generated password: {}", p);
             }
@@ -117,34 +94,56 @@ fn shell_loop() -> ! {
                 vga::vprintln!("Fake MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]);
             }
-            "reboot" => {
-                vga::vprintln!("Reboot requested — halting kernel.");
-                loop { core::hint::spin_loop(); }
-            }
+            "reboot" => loop { core::hint::spin_loop(); },
             x if x.starts_with("fs ls") => {
-                fs::list_files();
+                let mut buf = [0u8; 256];
+                let n = fs::list_files_syscall(buf.as_mut_ptr(), buf.len());
+                if let Ok(out) = core::str::from_utf8(&buf[..n]) {
+                    vga::vprintln!("{}", out);
+                }
             }
             x if x.starts_with("fs cat ") => {
                 let parts: Vec<&str> = x.splitn(3, ' ').collect();
                 if parts.len() == 3 {
-                    fs::print_file(parts[2]);
-                } else {
-                    vga::vprintln!("Usage: fs cat <filename>");
+                    let fname = parts[2];
+                    let mut out = [0u8; 512];
+                    let n = fs::read_file_syscall(fname.as_ptr(), fname.len(), out.as_mut_ptr());
+                    if let Ok(s) = core::str::from_utf8(&out[..n]) {
+                        vga::vprintln!("{}", s);
+                    }
                 }
             }
             "" => {}
-            _ => vga::vprintln!("Unknown command: '{}'. Type 'help'.", cmd),
+            _ => vga::vprintln!("Unknown command: '{}'", cmd),
         }
     }
 }
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    vga::vprintln!("\n\n*** PANIC ***");
+    vga::vprintln!("\n*** PANIC ***");
     if let Some(loc) = info.location() {
-        vga::vprintln!("panic at {}:{}: {}", loc.file(), loc.line(), info);
+        vga::vprintln!("at {}:{}: {}", loc.file(), loc.line(), info);
     } else {
         vga::vprintln!("panic: {}", info);
     }
     loop { core::hint::spin_loop(); }
+}
+
+unsafe fn pmm_setup_linker() {
+    extern "C" {
+        static __kernel_start: u8;
+        static __kernel_end: u8;
+    }
+
+    let kstart = &__kernel_start as *const _ as usize;
+    let kend = &__kernel_end as *const _ as usize;
+
+    let kernel_end_page = ((kend + FRAME_SIZE - 1) / FRAME_SIZE) * FRAME_SIZE;
+    let pool_start = if kernel_end_page < 0x0010_0000 { 0x0010_0000 } else { kernel_end_page };
+    let pool_size = 64 * 1024 * 1024;
+    let frames = pool_size / FRAME_SIZE;
+
+    PMM.init(pool_start as *mut u8, pool_size, pool_start / FRAME_SIZE, frames);
+    vga::vprintln!("PMM init done: {} frames", frames);
 }
