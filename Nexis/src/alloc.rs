@@ -1,31 +1,47 @@
+// Nexis/src/alloc.rs
 #![no_std]
 
-use linked_list_allocator::LockedHeap;
-use crate::memory::FRAME_SIZE;
+use core::alloc::{GlobalAlloc, Layout};
+use core::ptr::null_mut;
+use spin::Mutex;
 
-pub const HEAP_START: usize = 0x_4444_4444_0000;
-pub const HEAP_SIZE: usize = 2 * 1024 * 1024; // 2 MiB heap (adjust if you want larger)
-
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
-
-pub unsafe fn init_heap(pmm: &crate::memory::PhysicalMemoryManager) {
-    let heap_start = HEAP_START;
-    let heap_size = HEAP_SIZE;
-
-    let frames = (heap_size + FRAME_SIZE - 1) / FRAME_SIZE;
-    let mut pa = heap_start;
-
-    for _ in 0..frames {
-        pmm.mark_used(pa);
-        pa = pa.wrapping_add(FRAME_SIZE);
-    }
-
-    ALLOCATOR.lock().init(HEAP_START as *mut u8, HEAP_SIZE);
+pub struct BumpAllocator {
+    heap_start: usize,
+    heap_end: usize,
+    next: usize,
 }
 
-#[alloc_error_handler]
-fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
-    crate::vga::vprintln!("ALLOC ERROR: {:?}", layout);
-    loop { core::hint::spin_loop(); }
+unsafe impl GlobalAlloc for Mutex<BumpAllocator> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let mut allocator = self.lock();
+
+        let alloc_start = (allocator.next + layout.align() - 1) & !(layout.align() - 1);
+        let alloc_end = alloc_start.saturating_add(layout.size());
+
+        if alloc_end > allocator.heap_end {
+            null_mut()
+        } else {
+            allocator.next = alloc_end;
+            alloc_start as *mut u8
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // bump allocator cannot free
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: Mutex<BumpAllocator> = Mutex::new(BumpAllocator {
+    heap_start: 0,
+    heap_end: 0,
+    next: 0,
+});
+
+/// Initialize allocator with given heap range
+pub unsafe fn init_heap(start: usize, size: usize) {
+    let mut alloc = GLOBAL_ALLOCATOR.lock();
+    alloc.heap_start = start;
+    alloc.heap_end = start + size;
+    alloc.next = start;
 }
