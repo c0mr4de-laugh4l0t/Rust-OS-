@@ -5,6 +5,7 @@ use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
 pub mod alloc;
+pub mod context;
 pub mod interrupts;
 pub mod pit;
 pub mod kb;
@@ -14,12 +15,13 @@ pub mod task;
 pub mod scheduler;
 pub mod process;
 pub mod syscall;
+pub mod syscall_dispatch;
 pub mod fs;
+pub mod userland;
 
-use vga::VgaWriter;
 use crate::vga::VGA_WRITER;
 use crate::kb::Kb;
-use memory::{PhysicalMemoryManager, FRAME_SIZE};
+use crate::memory::{PhysicalMemoryManager, FRAME_SIZE};
 
 entry_point!(kernel_main);
 
@@ -33,80 +35,53 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     {
         let mut vw = VGA_WRITER.lock();
         vw.clear_screen();
-        vw.write_str("\n=== IronVeil / Nexis Kernel ===\n");
-        vw.write_str("IRQ keyboard + PMM + Scheduler + Syscalls + FS\n\n");
+        vw.write_str("\n=== Nexis Kernel Boot ===\n");
+        vw.write_str("Init sequence starting...\n\n");
     }
 
-    crate::vga::sprintln!("\n=== IronVeil / Nexis (serial log) ===");
-    crate::vga::sprintln!("System init in progress...\n");
+    unsafe { pmm_setup_linker(); }
 
-    unsafe {
-        pmm_setup_linker();
-    }
-
-    unsafe {
-        if let Some(frame) = PMM.alloc_frame() {
-            let heap_start = frame.start_address();
-            let heap_size = 1024 * 1024;
-            crate::alloc::init_heap(heap_start, heap_size);
-            crate::vga::vprintln!("Heap initialized at 0x{:x}, size {}", heap_start, heap_size);
-        } else {
-            crate::vga::vprintln!("Heap allocation failed");
-        }
-    }
+    Kb::init();
+    pit::init();
 
     crate::fs::fs_init();
-    Kb::init();
-
-    extern "C" fn demo_task() {
-        let mut i: u64 = 0;
-        loop {
-            crate::vga::vprintln!("demo_task tick {}", i);
-            i = i.wrapping_add(1);
-            for _ in 0..200_000 { core::hint::spin_loop(); }
-            crate::scheduler::task_yield();
-        }
-    }
 
     extern "C" fn shell_task() {
         shell_loop();
     }
 
     unsafe {
-        if let Some(slot) = crate::scheduler::spawn(demo_task, &PMM, 4) {
-            crate::vga::vprintln!("Spawned demo task at slot {}", slot);
-        }
-        if let Some(slot) = crate::scheduler::spawn(shell_task, &PMM, 16) {
-            crate::vga::vprintln!("Spawned shell task at slot {}", slot);
+        if let Some(_) = scheduler::spawn(shell_task, &PMM, 16) {
+            crate::vga::vprintln!("Shell task spawned");
+        } else {
+            crate::vga::vprintln!("Shell spawn failed");
         }
     }
 
-    crate::scheduler::schedule_loop()
+    scheduler::schedule_loop()
 }
 
 fn shell_loop() -> ! {
     use kb::Kb;
-
     let mut rng = crate::kb::XorShift64::new(0xabcdef123456789u64);
 
     loop {
         crate::vga::vprint!("ironveil@nexis:~$ ");
         crate::vga::sprint!("ironveil@nexis:~$ ");
-
         let line = Kb::read_line_irq();
         let cmd = line.trim();
 
         match cmd {
             "help" => {
-                crate::vga::vprintln!("Commands:");
-                crate::vga::vprintln!("  help       - this message");
-                crate::vga::vprintln!("  clear|cls  - clear screen");
+                crate::vga::vprintln!("Available commands:");
+                crate::vga::vprintln!("  help       - show this message");
+                crate::vga::vprintln!("  clear      - clear screen");
                 crate::vga::vprintln!("  genpass    - generate password");
                 crate::vga::vprintln!("  ip         - fake IPv4");
                 crate::vga::vprintln!("  mac        - fake MAC");
-                crate::vga::vprintln!("  reboot     - halt kernel");
+                crate::vga::vprintln!("  reboot     - halt");
                 crate::vga::vprintln!("  fs ls      - list files");
-                crate::vga::vprintln!("  fs cat <file> - show file contents");
+                crate::vga::vprintln!("  fs cat <f> - print file contents");
             }
             "clear" | "cls" => {
                 VGA_WRITER.lock().clear_screen();
@@ -134,7 +109,7 @@ fn shell_loop() -> ! {
                     parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]);
             }
             "reboot" => {
-                crate::vga::vprintln!("System halted. Restart QEMU.");
+                crate::vga::vprintln!("System halting. Restart QEMU to continue.");
                 loop { core::hint::spin_loop(); }
             }
             x if x.starts_with("fs ls") => {
@@ -149,7 +124,7 @@ fn shell_loop() -> ! {
                 }
             }
             "" => {}
-            _ => crate::vga::vprintln!("Unknown command: '{}'", cmd),
+            _ => crate::vga::vprintln!("Unknown command: '{}'. Type 'help'.", cmd),
         }
     }
 }
@@ -175,15 +150,33 @@ unsafe fn pmm_setup_linker() {
     let kend = &__kernel_end as *const _ as usize;
     let kernel_end_page = ((kend + FRAME_SIZE - 1) / FRAME_SIZE) * FRAME_SIZE;
     let pool_start = if kernel_end_page < 0x0010_0000 { 0x0010_0000 } else { kernel_end_page };
-    let max_pool_size = 128 * 1024 * 1024;
+    let max_pool_size = 128 * 1024 * 1024usize;
     let pool_end = pool_start.saturating_add(max_pool_size);
-    let pool_size = pool_end - pool_start;
+    let pool_size = if pool_end > pool_start { pool_end - pool_start } else { 0usize };
+    if pool_size < FRAME_SIZE { return; }
+
     let total_frames = pool_size / FRAME_SIZE;
+    let bitmap_bytes_needed = (total_frames + 7) / 8;
+    let bitmap_frames = (bitmap_bytes_needed + FRAME_SIZE - 1) / FRAME_SIZE;
+    let bitmap_phys = pool_start;
+    let bitmap_bytes_reserved = bitmap_frames * FRAME_SIZE;
 
-    PMM.init(pool_start as *mut u8, pool_size, pool_start / FRAME_SIZE, total_frames);
+    let base_frame_addr = pool_start + bitmap_bytes_reserved;
+    let base_frame = base_frame_addr / FRAME_SIZE;
+    let frames_managed = (pool_size - bitmap_bytes_reserved) / FRAME_SIZE;
 
-    crate::vga::vprintln!(
-        "PMM initialized: kernel 0x{:x}-0x{:x}, pool 0x{:x}-0x{:x}, frames={}",
-        kstart, kend, pool_start, pool_end, total_frames
-    );
+    PMM.init(bitmap_phys as *mut u8, bitmap_bytes_reserved, base_frame, frames_managed);
+
+    for i in 0..bitmap_frames {
+        let pa = bitmap_phys + i * FRAME_SIZE;
+        PMM.mark_used(pa);
+    }
+    let kstart_frame = (kstart / FRAME_SIZE) * FRAME_SIZE;
+    let kend_frame = ((kend + FRAME_SIZE - 1) / FRAME_SIZE) * FRAME_SIZE;
+    let mut pa = kstart_frame;
+    while pa < kend_frame {
+        PMM.mark_used(pa);
+        pa += FRAME_SIZE;
+    }
+    crate::vga::vprintln!("PMM ready: {} frames managed", PMM.free_frames());
 }
