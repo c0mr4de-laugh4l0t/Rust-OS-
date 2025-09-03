@@ -1,22 +1,24 @@
+#[inline(always)]
 pub fn prepare_stack(entry: extern "C" fn(), stack_base: usize, stack_size: usize) -> usize {
-    let mut sp = stack_base + stack_size;
-    sp &= !0xF;
+    // Start at top of stack, align to 16 bytes
+    let mut sp = (stack_base + stack_size) & !0xF;
 
     unsafe {
-        // push entry return address
+        // Return address (what "ret" will jump to)
         sp -= core::mem::size_of::<usize>();
         (sp as *mut usize).write_volatile(entry as usize);
 
-        // push rbp placeholder
+        // RBP (frame pointer)
         sp -= core::mem::size_of::<usize>();
-        (sp as *mut usize).write_volatile(0usize);
+        (sp as *mut usize).write_volatile(0);
 
-        // push r15 → r12 → rbx placeholders (reverse order for pop restore)
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r15
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r14
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r13
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // r12
-        sp -= core::mem::size_of::<usize>(); (sp as *mut usize).write_volatile(0usize); // rbx
+        // Callee-saved registers (rbx, r12, r13, r14, r15)
+        for _ in 0..5 {
+            sp -= core::mem::size_of::<usize>();
+            (sp as *mut usize).write_volatile(0);
+        }
     }
+
     sp
 }
+
