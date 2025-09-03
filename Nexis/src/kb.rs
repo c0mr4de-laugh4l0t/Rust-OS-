@@ -1,8 +1,7 @@
 use spin::Mutex;
 use lazy_static::lazy_static;
-use pc_keyboard::{Keyboard, layouts, ScancodeSet1, DecodedKey, HandleControl};
+use pc_keyboard::{Keyboard, layouts, ScancodeSet1, DecodedKey, HandleControl, KeyCode};
 use x86_64::instructions::hlt;
-use core::str;
 
 pub struct XorShift64 { state: u64 }
 impl XorShift64 {
@@ -43,7 +42,6 @@ impl ScancodeQueue {
             self.buf[self.head] = sc;
             self.head = next;
         }
-        // else drop if buffer full
     }
     fn pop(&mut self) -> Option<u8> {
         if self.tail == self.head { return None; }
@@ -61,22 +59,22 @@ impl Kb {
     pub fn push_scancode(sc: u8) {
         SCANCODE_QUEUE.lock().push(sc);
     }
-    /// blocking read of a single scancode; sleeps with `hlt` if none
     fn read_scancode_blocking() -> u8 {
         loop {
             if let Some(sc) = SCANCODE_QUEUE.lock().pop() {
                 return sc;
             }
-            hlt(); // wait for next interrupt
+            hlt();
         }
     }
-    /// read bytes until newline, return owned String (heapless using stack buffer and return &str)
+
     pub fn read_line_irq() -> &'static str {
-        // static buffer to store an owned line; we keep it static for simplicity
         static mut LINE_BUF: [u8; 256] = [0; 256];
         let mut len = 0usize;
-        let mut keyboard: Keyboard<layouts::Us104Key, ScancodeSet1> =
-            Keyboard::new(layouts::Us104Key, ScancodeSet1, HandleControl::Ignore);
+
+        // FIXED: pass 2 args, not 3
+        let mut keyboard: Keyboard<layouts::Us104Key, ScancodeSet1, HandleControl> =
+            Keyboard::new(layouts::Us104Key, ScancodeSet1);
 
         loop {
             let sc = Self::read_scancode_blocking();
@@ -84,7 +82,6 @@ impl Kb {
                 if let Some(key) = keyboard.process_keyevent(event) {
                     match key {
                         DecodedKey::Unicode(ch) => {
-                            // echo to VGA/serial
                             crate::vga::VGA_WRITER.lock().put_char(ch);
                             crate::vga::sprint!("{}", ch);
                             if ch == '\r' || ch == '\n' {
@@ -92,33 +89,32 @@ impl Kb {
                                 break;
                             } else if ch == '\x08' {
                                 if len > 0 { len -= 1; }
-                            } else {
-                                if len < 255 {
-                                    unsafe { LINE_BUF[len] = ch as u8; }
-                                    len += 1;
-                                }
+                            } else if len < 255 {
+                                unsafe { LINE_BUF[len] = ch as u8; }
+                                len += 1;
                             }
                         }
                         DecodedKey::RawKey(k) => {
-                            // Enter and Backspace can appear as raw keys
-                            if format!("{:?}", k) == "Enter" {
-                                crate::vga::vprintln!("");
-                                break;
-                            } else if format!("{:?}", k) == "Backspace" {
-                                if len > 0 { len -= 1; }
-                                crate::vga::sprint!("\x08 \x08");
+                            match k {
+                                KeyCode::Enter => {
+                                    crate::vga::vprintln!("");
+                                    break;
+                                }
+                                KeyCode::Backspace => {
+                                    if len > 0 { len -= 1; }
+                                    crate::vga::sprint!("\x08 \x08");
+                                }
+                                _ => {}
                             }
                         }
                     }
                 }
             }
         }
+
         unsafe {
             LINE_BUF[len] = 0;
-            let s = core::str::from_utf8_unchecked(&LINE_BUF[..len]);
-            // leak a &'static str: acceptable for small demo
-            // allocate a static arena? for demo, returning a static slice pointing to LINE_BUF is fine.
-            s
+            core::str::from_utf8_unchecked(&LINE_BUF[..len])
         }
     }
-  }
+}
