@@ -1,16 +1,42 @@
-# IronVeil + Nexis Kernel
+# Nexis Kernel
 
 ```
-██╗██████╗  ██████╗ ███╗   ██╗██╗   ██╗███████╗██╗██╗     
-██║██╔══██╗██╔═══██╗████╗  ██║██║   ██║██╔════╝██║██║     
-██║██████╔╝██║   ██║██╔██╗ ██║██║   ██║█████╗  ██║██║     
-██║██╔══██╗██║   ██║██║╚██╗██║╚██╗ ██╔╝██╔══╝  ██║██║     
-██║██║  ██║╚██████╔╝██║ ╚████║ ╚████╔╝ ███████╗██║███████╗
-╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝  ╚═══╝  ╚══════╝╚═╝╚══════╝
+ .S_sSSs      sSSs   .S S.    .S    sSSs 
+.SS~YS%%b    d%%SP  .SS SS.  .SS   d%%SP 
+S%S   `S%b  d%S'    S%S S%S  S%S  d%S'   
+S%S    S%S  S%S     S%S S%S  S%S  S%|    
+S%S    S&S  S&S     S%S S%S  S&S  S&S    
+S&S    S&S  S&S_Ss   SS SS   S&S  Y&Ss   
+S&S    S&S  S&S~SP    S_S    S&S  `S&&S  
+S&S    S&S  S&S      SS~SS   S&S    `S*S 
+S*S    S*S  S*b     S*S S*S  S*S     l*S 
+S*S    S*S  S*S.    S*S S*S  S*S    .S*P 
+S*S    S*S   SSSbs  S*S S*S  S*S  sSS*S  
+S*S    SSS    YSSP  S*S S*S  S*S  YSS'   
+SP                  SP       SP          
+Y                   Y        Y           
+
 ```
+**Nexis** is a Rust-based kernel built for **safety, modularity, and experimentation**.  
+It prevents unsafe memory access by default and includes:  
+- **Preemptive multitasking** with a custom scheduler  
+- **Safe memory management** via a physical memory manager  
+- **Task context switching** using Rust + inline assembly  
+- **Basic VGA + serial output**  
+- **PS/2 keyboard input**  
+- **System calls & syscall dispatcher**  
+- **Early filesystem support**  
 
-IronVeil + Nexis is a privacy-first, modular OS with a Rust-based kernel that prevents unsafe memory access, making it far more secure than traditional C-based systems. It features Tor-based IP randomization, MAC spoofing, encrypted persistence, preemptive multitasking, and a modern CLI/TUI for safe, hands-on system experimentation.
+---
 
+## Development Status 🚧
+All major subsystems (scheduler, filesystem, syscalls, VGA, keyboard, memory manager) are implemented.  
+Currently, the project faces **build system issues** (`cargo`, `bootimage`, and target configs), which are being debugged.  
+Despite this, the core kernel code is in place and actively evolving.  
+
+---
+
+## Project Structure
 ---
 
 ## Project Structure
